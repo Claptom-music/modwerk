@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 3,
+  "id": "granula",
+  "name": "Granula",
+  "version": "0.1.0-experimental",
+  "machine": "digitakt-ii",
+  "category": "machines",
+  "exclusive": false,
+  "author": { "github": "Claptom-music", "credits": ["Claptom-music"] },
+  "maintainers": ["Claptom-music"],
+  "presentation": {
+    "label": "GRANULA",
+    "family": "Machine",
+    "summary": "A granular synth machine: it plays a track's sample as a cloud of short grains, forward, reversed or at random, in time with the track.",
+    "overview": "Granula is a new machine in the track's machine list. Each note starts a cloud of grains cut from the track's sample: POS picks where they come from, SPRD scatters them around it, SIZE sets how long each grain lasts and DENS how many start per step of the track, so the cloud follows the tempo and the track's speed. MODE plays every grain forward, every grain reversed, or each one either way at random. The Digitakt's own filter, amp envelope, LFOs and effects shape the cloud like any machine. For chords and overlapping clouds, link tracks as voices in SETTINGS (VOICES), a feature of the Digitakt II base.",
+    "highlights": [
+      "Its own machine in the track's machine list, saved with the kit.",
+      "Three grain modes: forward, reversed and random.",
+      "Grain density locked to the track's tempo and speed.",
+      "Polyphonic through the base's linked voices: each note its own cloud on its own track."
+    ],
+    "usage": [
+      "Load a long, evolving sample, choose Granula and slowly sweep POS for a shifting texture.",
+      "Set MODE to RAND, SIZE short and DENS high for a shimmering cloud.",
+      "Link three tracks as voices and play chords from the keys or over MIDI."
+    ]
+  },
+  "access": {
+    "location": "The machine list of a track (FUNC + SRC), after the stock machines.",
+    "steps": [
+      "Select a track.",
+      "Hold FUNC and press SRC to open the machine list.",
+      "Scroll down past MIDI to GRANULA and press YES.",
+      "Choose a sample with knob D on the SRC page, as on SAMPLE."
+    ],
+    "screenshots": []
+  },
+  "controls": [
+    { "name": "TUNE (knob A)", "default": null, "doc": "The grains' pitch, as SAMPLE's TUNE.", "labels": null },
+    { "name": "MODE (knob B)", "default": 3, "doc": "FWD plays every grain forward, REV every grain reversed, RAND each grain either way at random.", "labels": ["REV", "RAND", "RAND", "FWD"] },
+    { "name": "SIZE (knob C)", "default": 0, "doc": "How long each grain lasts, from about 5 milliseconds to about a second.", "labels": null },
+    { "name": "SAMP (knob D)", "default": null, "doc": "The sample the grains come from.", "labels": null },
+    { "name": "POS (knob E)", "default": 0, "doc": "Where in the sample the grains come from.", "labels": null },
+    { "name": "DENS (knob F)", "default": null, "doc": "How many grains start per step of the track, from 1 to 16.", "labels": null },
+    { "name": "SPRD (knob G)", "default": null, "doc": "How far each grain's start scatters around POS.", "labels": null }
+  ],
+  "compatibility": {
+    "releases": ["1.17"],
+    "requires": [],
+    "conflicts": [],
+    "limitations": [
+      "Needs the Digitakt II base with added machines; polyphony needs the base's linked voices.",
+      "B's two loop positions (REV.L and FWD.L) both play RAND."
+    ]
+  },
+  "platform": { "kind": "elemod", "core": "1.1", "build": "build.json", "events": [], "claims": ["machine:8"] },
+  "resources": {
+    "memoryBytes": null,
+    "fastBytes": null,
+    "load": { "display": "Not measured yet", "method": "unmeasured", "conditions": "Measure with every track playing Granula at DENS and SIZE full, with linked voices." }
+  },
+  "evidence": { "tier": "none", "moduleVersion": "0.1.0-experimental", "sourceSha256": null, "reports": [], "hardware": null, "verifiedBy": null },
+  "tests": { "report": "TESTING.md", "summary": "Not tested on a unit yet." },
+  "license": { "spdx": "GPL-3.0-or-later", "file": "LICENSE", "declaration": "Original work by the author." },
+  "media": [
+    { "path": "media/thumbnail.svg", "kind": "thumbnail", "caption": "Granula thumbnail", "alt": "Placeholder thumbnail for Granula", "credit": "Claptom-music", "license": "GPL-3.0-or-later", "source": "Original placeholder from the Modwerk SDK template; replace with your own artwork." }
+  ]
+}

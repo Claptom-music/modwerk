@@ -1,0 +1,13 @@
+[
+  {
+    "version": "0.1.0-experimental",
+    "date": "2026-11-23",
+    "changes": [
+      "First release: Granula, a granular synth machine in the track's machine list.",
+      "Every note plays a cloud of grains from the track's sample: POS, SPRD, SIZE and DENS shape it.",
+      "MODE plays the grains forward, reversed, or each either way at random.",
+      "Grain density follows the tempo and the track's speed.",
+      "With the base's linked voices (SETTINGS > VOICES), each note plays its own cloud on its own track."
+    ]
+  }
+]

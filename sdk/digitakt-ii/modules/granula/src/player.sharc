@@ -1,0 +1,622 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
+; Granula's grain player for the Digitakt II sound chip (OS 1.17), assembled by src/engine/elektron/sharc-asm.ts.
+;
+; The base's machine dispatcher jumps here for every voice of a Granula track, once per 32-sample block, with the
+; registers of the stock sample player's call: R4 = the voice's record (byte address), R8 = its output slot, R12 = 32,
+; R14 = 32 - voice, and the caller's frame. The player writes the voice's 32 samples into the slot and returns as the
+; stock player does (CRET). Facts about the records: sdk/machines/digitakt-ii/elekloader/modwerk/MACHINES.md.
+;
+; Each voice has a guide and up to GRAINS grains. The guide is the voice's own record, played by the stock sample
+; player into a block nobody hears, with its end moved to the sample's end: it ends the cloud when the sample would
+; end at the note's pitch (in the loop play modes it never ends, as a looped sample). A grain is a copy of the
+; record that starts at POS plus a random offset of up to SPRD, plays for SIZE samples through the stock player (so
+; TUNE, the note and the sample's own rate apply) and is shaped by a smooth window, 4 p (1 - p) over its life p.
+; DENS sets how many grains start per step of the track (1-16, from the base's tempo wire), so the cloud follows the
+; tempo and track speed. MODE (SAMPLE's play mode): FWD forward grains, REV reversed ones (the record's step is
+; already negative), RAND either, each grain at random.
+;
+; Memory (Granula's L2 range 0x200d0000-0x200f0000, loader byte addresses; claim dsp-region digitakt-ii/granula-l2):
+;   code 0x200d0000, variables 0x200d6000, scratch blocks 0x200d6400, voice state 0x200d7000 (32 x 16 words),
+;   grain state 0x200d8000 (32 x 4 x 8 words), grain records 0x200da000 (128 x 0x1d8 bytes, to 0x200e7000).
+; I registers hold byte addresses and M registers count words; DM(constant) takes a normal word address (byte / 4).
+; The stock player keeps R3, R5-R7, R9-R11, R13-R15, I0-I3, I5, M1-M3 and changes R0-R2, R4, R8, R12, I4, I12, I13,
+; M4, B4, L3, L4: this player keeps what it keeps, and keeps its own values in memory across calls to it.
+
+.equ STOCK_PLAYER, 0x1c4ecf
+.equ ALT_PLAYER, 0x1c5576         ; the render pass's other stock player, chosen per voice
+.equ STOCK_CHOICE, 0x200c2000 / 4 + 6 ; the base dispatcher's word: 0 when the pass called STOCK_PLAYER, 1 ALT_PLAYER
+.equ RECB, 0x1d8                ; bytes per voice record
+.equ RECW, 118                  ; words per voice record
+.equ R_ADDR, 0                  ; record word: the sample's address, 0 for no sample
+.equ R_SAMPLES, 0x62            ; record word: the sample's length in samples
+.equ R_ENDW, 0x69               ; record word: where a forward play head stops, in words of two samples
+.equ R_STEPF, 0x6a              ; record word: the step's fraction
+.equ R_STEPW, 0x6b              ; record word: the step's whole part, negative when the play mode reverses
+.equ R_FRAC, 0x6c               ; record word: the play position's fraction
+.equ R_POS, 0x6d                ; record word: the play position, in words
+.equ R_PLAYING, 0x6e            ; record word: nonzero while the stock player renders it
+.equ R_LOOPING, 0x6f            ; record word: 1 in the loop play modes
+.equ PREC0, 0x250738            ; voice 0's parameter record (byte address); 0xdc bytes per voice
+.equ PRECB, 0xdc
+.equ P_POS, 0x25                ; knob E (SAMPLE's START) as 0-1
+.equ P_DENS, 0x26               ; knob F (SAMPLE's LENGTH) as 0-1
+.equ P_SPRD, 0x27               ; knob G (SAMPLE's LOOP position) as 0-1
+.equ P_SIZE, 0x28               ; knob C (SAMPLE's crossfade) as 0-1
+.equ TRACK_STEPS, 0x200c2c24    ; byte address: the base's samples per step of tracks 1-16
+
+.equ VARS, 0x200d6000
+.equ V, VARS / 4
+.equ V_REC, V + 0               ; the voice's record
+.equ V_SLOT, V + 1              ; its output slot
+.equ V_VSTATE, V + 2            ; its state (byte address)
+.equ V_GSTATE, V + 3            ; its first grain's state (byte address)
+.equ V_GREC, V + 4              ; its first grain's record (byte address)
+.equ V_STEP, V + 5              ; samples per step of its track
+.equ V_LENW, V + 6              ; the sample's length in words
+.equ V_GRAIN, V + 7             ; the grain being handled, 0-3
+.equ V_GAIN, V + 8              ; the window's peak gain for this block
+.equ V_SAVE, V + 16             ; 24 saved registers
+
+.equ SCRATCH, 0x200d6400        ; 32 floats: one grain's block
+.equ GUIDE, 0x200d6480          ; 32 floats: the guide's block (not heard)
+.equ VSTATE, 0x200d7000         ; per voice 16 words (below)
+.equ S_COUNT, 0                 ;   samples to the next grain start
+.equ S_RANDOM, 1                ;   the voice's random state
+.equ S_LASTPOS, 2               ;   the guide's position after the last block, -1 before the first
+.equ S_LASTFRAC, 3              ;   and its fraction
+.equ S_NEXT, 4                  ;   the grain slot the next start takes
+.equ GSTATE, 0x200d8000         ; per grain 8 words (below)
+.equ G_ACTIVE, 0
+.equ G_PHASE, 1                 ;   its life so far, 0-1 (float)
+.equ G_DPHASE, 2                ;   per sample (float)
+.equ GRECS, 0x200da000
+.equ GRAINS, 4
+.equ VSTATEB, 64                ; bytes of state per voice
+.equ GSTATEB, 32                ; bytes of state per grain
+
+.code 0x200d0000
+granula_player:
+  DM(V_SAVE + 0) = R3
+  DM(V_SAVE + 1) = R5
+  DM(V_SAVE + 2) = R6
+  DM(V_SAVE + 3) = R7
+  DM(V_SAVE + 4) = R9
+  DM(V_SAVE + 5) = R10
+  DM(V_SAVE + 6) = R11
+  DM(V_SAVE + 7) = R15
+  DM(V_SAVE + 8) = I0
+  DM(V_SAVE + 9) = I1
+  DM(V_SAVE + 10) = I2
+  DM(V_SAVE + 11) = I3
+  DM(V_SAVE + 12) = M0
+  DM(V_SAVE + 13) = M1
+  DM(V_SAVE + 14) = M2
+  DM(V_SAVE + 15) = M3
+  DM(V_SAVE + 16) = L0
+  DM(V_SAVE + 17) = L1
+  DM(V_SAVE + 18) = L2
+  DM(V_SAVE + 19) = ASTATX
+  DM(V_SAVE + 20) = STKYX
+  DM(V_SAVE + 21) = R13
+  DM(V_SAVE + 22) = R14
+  L0 = 0
+  L1 = 0
+  L2 = 0
+  M0 = 1
+  M3 = 0
+  DM(V_REC) = R4
+  DM(V_SLOT) = R8
+  R0 = 32
+  R9 = R0 - R14                 ; R9: the voice, 0-31
+  R1 = VSTATEB
+  R0 = R9 * R1 (SSI)
+  R1 = VSTATE
+  R0 = R0 + R1
+  DM(V_VSTATE) = R0
+  R1 = GRAINS * GSTATEB
+  R0 = R9 * R1 (SSI)
+  R1 = GSTATE
+  R0 = R0 + R1
+  DM(V_GSTATE) = R0
+  R1 = GRAINS * RECB
+  R0 = R9 * R1 (SSI)
+  R1 = GRECS
+  R0 = R0 + R1
+  DM(V_GREC) = R0
+  R1 = -1
+  R0 = LSHIFT R9 BY R1          ; the track
+  R1 = 2
+  R0 = LSHIFT R0 BY R1
+  R1 = TRACK_STEPS
+  R0 = R0 + R1
+  I0 = R0
+  R0 = DM(M3, I0)
+  DM(V_STEP) = R0
+  R1 = PRECB
+  R0 = R9 * R1 (SSI)
+  R1 = PREC0
+  R10 = R0 + R1                 ; R10: the voice's parameter record (byte address)
+
+; No sample on this voice: the stock player writes its silence.
+  I1 = R4
+  R0 = DM(M3, I1)
+  R0 = PASS R0
+  IF EQ JUMP silence
+
+; The sample's length in words, and the guide's end moved there (the setup puts it at START + LENGTH every block).
+  R1 = R_SAMPLES
+  M1 = R1
+  R0 = DM(M1, I1)
+  R1 = -1
+  R0 = LSHIFT R0 BY R1
+  DM(V_LENW) = R0
+  R1 = R_ENDW
+  M1 = R1
+  DM(M1, I1) = R0
+
+; A new note? The setup moved the guide's position since this player left it.
+  R0 = DM(V_VSTATE)
+  I2 = R0
+  R1 = R_POS
+  M1 = R1
+  R2 = DM(M1, I1)
+  R1 = S_LASTPOS
+  M1 = R1
+  R3 = DM(M1, I2)
+  COMP(R2, R3)
+  IF NE JUMP new_note
+  R1 = R_FRAC
+  M1 = R1
+  R2 = DM(M1, I1)
+  R1 = S_LASTFRAC
+  M1 = R1
+  R3 = DM(M1, I2)
+  COMP(R2, R3)
+  IF EQ JUMP same_note
+new_note:
+  R0 = 0                        ; the first grain starts in this block, every other grain stops
+  R1 = S_COUNT
+  M1 = R1
+  DM(M1, I2) = R0
+  R1 = S_NEXT
+  M1 = R1
+  DM(M1, I2) = R0
+  R0 = DM(V_GSTATE)
+  I3 = R0
+  R0 = 0
+  LCNTR = GRAINS * 8, DO clear_end UNTIL LCE
+  DM(I3, M0) = R0
+  NOP
+clear_end: NOP
+same_note:
+
+; The guide: the voice's record through the stock player, into a block nobody hears.
+  R4 = DM(V_REC)
+  R8 = GUIDE
+  R12 = 32
+  R0 = DM(STOCK_CHOICE)
+  R0 = PASS R0
+  IF NE JUMP guide_alt
+  CCALL STOCK_PLAYER
+  JUMP guide_done
+guide_alt:
+  CCALL ALT_PLAYER
+guide_done:
+  M0 = 1
+  M3 = 0
+  R0 = DM(V_REC)
+  I1 = R0
+  R0 = DM(V_VSTATE)
+  I2 = R0
+  R1 = R_POS
+  M1 = R1
+  R2 = DM(M1, I1)
+  R1 = S_LASTPOS
+  M1 = R1
+  DM(M1, I2) = R2
+  R1 = R_FRAC
+  M1 = R1
+  R2 = DM(M1, I1)
+  R1 = S_LASTFRAC
+  M1 = R1
+  DM(M1, I2) = R2
+
+; The window's peak gain: about 1 / sqrt(grains that overlap), so a dense cloud is as loud as a sparse one.
+  CALL timing                   ; F4: the grain's length in samples, R5: samples between starts
+  F0 = FLOAT R5
+  F1 = RECIPS F0                ; overlap = length / interval, at least 1
+  F0 = F0 * F1                  ; (refine 1/interval once: x (2 - a x))
+  F2 = 2.0
+  F0 = F2 - F0
+  F1 = F1 * F0
+  F0 = F4 * F1
+  F2 = 1.0
+  F0 = MAX(F0, F2)
+  F1 = RSQRTS F0                ; 1 / sqrt(overlap), refined once (Newton): y (1.5 - 0.5 x y y)
+  F2 = F1 * F1
+  F2 = F2 * F0
+  F3 = 0.5
+  F2 = F2 * F3
+  F3 = 1.5
+  F2 = F3 - F2
+  F1 = F1 * F2
+  F2 = 4.0                      ; the window 4 p (1 - p) peaks at 1
+  F1 = F1 * F2
+  DM(V_GAIN) = F1
+
+; Start a grain when the countdown runs out, while the guide plays.
+  R0 = DM(V_VSTATE)
+  I2 = R0
+  R1 = S_COUNT
+  M1 = R1
+  R2 = DM(M1, I2)
+  R3 = 32
+  R2 = R2 - R3
+  DM(M1, I2) = R2
+  IF GT JUMP no_start
+  R2 = R2 + R5                  ; the next start, one interval on
+  DM(M1, I2) = R2
+  R0 = DM(V_REC)
+  I1 = R0
+  R1 = R_PLAYING
+  M1 = R1
+  R0 = DM(M1, I1)
+  R0 = PASS R0
+  IF EQ JUMP no_start
+  CALL start_grain
+no_start:
+
+; Silence the slot, then add each playing grain into it.
+  R0 = DM(V_SLOT)
+  I0 = R0
+  R0 = 0
+  LCNTR = 32, DO zero_end UNTIL LCE
+  DM(I0, M0) = R0
+  NOP
+zero_end: NOP
+  R0 = 0
+  DM(V_GRAIN) = R0
+grain_loop:
+  R0 = DM(V_GRAIN)
+  R1 = 5
+  R1 = LSHIFT R0 BY R1          ; 32 bytes of state a grain
+  R2 = DM(V_GSTATE)
+  R1 = R1 + R2
+  I2 = R1
+  R1 = DM(M3, I2)               ; G_ACTIVE
+  R1 = PASS R1
+  IF EQ JUMP grain_next
+  R1 = RECB
+  R1 = R0 * R1 (SSI)
+  R2 = DM(V_GREC)
+  R4 = R1 + R2
+  R8 = SCRATCH
+  R12 = 32
+  R0 = DM(STOCK_CHOICE)
+  R0 = PASS R0
+  IF NE JUMP grain_alt
+  CCALL STOCK_PLAYER
+  JUMP grain_played
+grain_alt:
+  CCALL ALT_PLAYER
+grain_played:
+  M0 = 1
+  M3 = 0
+  R0 = DM(V_GRAIN)
+  R1 = 5
+  R1 = LSHIFT R0 BY R1
+  R2 = DM(V_GSTATE)
+  R1 = R1 + R2
+  I2 = R1
+  R1 = G_PHASE
+  M1 = R1
+  F8 = DM(M1, I2)               ; F8: the grain's life p
+  R1 = G_DPHASE
+  M2 = R1
+  F9 = DM(M2, I2)               ; F9: per sample
+  F10 = DM(V_GAIN)
+  F12 = 1.0
+  F13 = 0.0
+  R0 = SCRATCH
+  I0 = R0
+  R0 = DM(V_SLOT)
+  I1 = R0
+  LCNTR = 32, DO window_end UNTIL LCE
+  F1 = F12 - F8
+  F2 = F8 * F1
+  F2 = MAX(F2, F13)
+  F2 = F2 * F10
+  F0 = DM(I0, M0)
+  F0 = F0 * F2
+  F3 = DM(M3, I1)
+  F3 = F3 + F0
+  DM(I1, M0) = F3
+  F8 = F8 + F9
+  NOP
+window_end: NOP
+  DM(M1, I2) = F8
+  COMP(F8, F12)
+  IF LT JUMP grain_next
+  R0 = 0                        ; its window is over
+  DM(M3, I2) = R0
+grain_next:
+  R0 = DM(V_GRAIN)
+  R0 = R0 + 1
+  DM(V_GRAIN) = R0
+  R1 = GRAINS
+  COMP(R0, R1)
+  IF LT JUMP grain_loop
+  JUMP done
+
+silence:
+  R4 = DM(V_REC)
+  R8 = DM(V_SLOT)
+  R12 = 32
+  R0 = DM(STOCK_CHOICE)
+  R0 = PASS R0
+  IF NE JUMP silence_alt
+  CCALL STOCK_PLAYER
+  JUMP done
+silence_alt:
+  CCALL ALT_PLAYER
+
+done:
+  R3 = DM(V_SAVE + 0)
+  R5 = DM(V_SAVE + 1)
+  R6 = DM(V_SAVE + 2)
+  R7 = DM(V_SAVE + 3)
+  R9 = DM(V_SAVE + 4)
+  R10 = DM(V_SAVE + 5)
+  R11 = DM(V_SAVE + 6)
+  R15 = DM(V_SAVE + 7)
+  I0 = DM(V_SAVE + 8)
+  I1 = DM(V_SAVE + 9)
+  I2 = DM(V_SAVE + 10)
+  I3 = DM(V_SAVE + 11)
+  M0 = DM(V_SAVE + 12)
+  M1 = DM(V_SAVE + 13)
+  M2 = DM(V_SAVE + 14)
+  M3 = DM(V_SAVE + 15)
+  L0 = DM(V_SAVE + 16)
+  L1 = DM(V_SAVE + 17)
+  L2 = DM(V_SAVE + 18)
+  R13 = DM(V_SAVE + 21)
+  R14 = DM(V_SAVE + 22)
+  ASTATX = DM(V_SAVE + 19)
+  STKYX = DM(V_SAVE + 20)
+  CRET
+
+; timing: F4 = a grain's length in samples (SIZE: 256 to 48,000, on a square curve), R5 = samples between grain
+; starts (the track's step / (1 + 15 DENS), at least one block). Reads R10, the voice's parameter record. Changes
+; R0-R2, R5, F0-F4, I3, M1.
+timing:
+  I3 = R10
+  R1 = P_SIZE
+  M1 = R1
+  F0 = DM(M1, I3)
+  F1 = 0.0
+  F0 = MAX(F0, F1)
+  F1 = 1.0
+  F0 = MIN(F0, F1)
+  F0 = F0 * F0
+  F1 = 47744.0
+  F0 = F0 * F1
+  F1 = 256.0
+  F4 = F0 + F1
+  R1 = P_DENS
+  M1 = R1
+  F0 = DM(M1, I3)
+  F1 = 0.0
+  F0 = MAX(F0, F1)
+  F1 = 1.0
+  F0 = MIN(F0, F1)
+  F1 = 15.0
+  F0 = F0 * F1
+  R0 = FIX F0
+  R0 = R0 + 1                   ; grains per step, 1-16
+  F0 = FLOAT R0
+  F1 = RECIPS F0
+  F0 = F0 * F1                  ; refined once
+  F2 = 2.0
+  F0 = F2 - F0
+  F1 = F1 * F0
+  R0 = DM(V_STEP)
+  F0 = FLOAT R0
+  F0 = F0 * F1
+  R5 = FIX F0
+  R1 = 32
+  R5 = MAX(R5, R1)
+  RTS
+
+; start_grain: copy the voice's record to the next grain slot, place it and set its window. Changes R0-R8, R11,
+; F0-F8, I0-I3, M1, M2.
+start_grain:
+  R0 = DM(V_VSTATE)
+  I2 = R0
+  R1 = S_NEXT
+  M1 = R1
+  R6 = DM(M1, I2)               ; R6: the slot
+  R0 = R6 + 1
+  R1 = GRAINS - 1
+  R0 = R0 AND R1
+  DM(M1, I2) = R0
+  R1 = RECB
+  R0 = R6 * R1 (SSI)
+  R1 = DM(V_GREC)
+  R7 = R0 + R1                  ; R7: its record
+  R0 = DM(V_REC)
+  I0 = R0
+  I1 = R7
+  LCNTR = RECW, DO copy_end UNTIL LCE
+  R0 = DM(I0, M0)
+  NOP
+copy_end: DM(I1, M0) = R0
+  R0 = 4                        ; its player state (words 1-0x50) as a new note's: zero
+  R0 = R0 + R7
+  I1 = R0
+  R0 = 0
+  LCNTR = 0x50, DO fresh_end UNTIL LCE
+  DM(I1, M0) = R0
+  NOP
+fresh_end: NOP
+  I1 = R7
+
+; Where it starts: POS of the sample, plus up to +-SPRD/2 of it at random.
+  R1 = S_RANDOM
+  M1 = R1
+  R0 = DM(M1, I2)
+  R1 = 1664525
+  R0 = R0 * R1 (SSI)
+  R1 = 1013904223
+  R0 = R0 + R1
+  DM(M1, I2) = R0
+  R11 = R0                      ; R11: this grain's random bits
+  R1 = -8
+  R0 = LSHIFT R0 BY R1          ; 24 bits
+  F0 = FLOAT R0
+  F1 = 0.00000011920929         ; 2^-23: -1 to 1 (from 0 to 2)
+  F0 = F0 * F1
+  F1 = 1.0
+  F0 = F0 - F1                  ; F0: -1 to 1
+  I3 = R10
+  R1 = P_SPRD
+  M1 = R1
+  F1 = DM(M1, I3)
+  F0 = F0 * F1
+  F1 = 0.5
+  F0 = F0 * F1                  ; the offset, -SPRD/2 to SPRD/2
+  R1 = P_POS
+  M1 = R1
+  F1 = DM(M1, I3)
+  F0 = F0 + F1                  ; F0: where, 0-1 of the sample
+  F1 = 0.0
+  F0 = MAX(F0, F1)
+  F1 = 1.0
+  F0 = MIN(F0, F1)
+  R2 = DM(V_LENW)               ; (R0 would overwrite F0: Rn and Fn are one register)
+  F1 = FLOAT R2
+  F0 = F0 * F1
+  R8 = FIX F0                   ; R8: the start, in words
+
+; Its direction: the record's own (REV is already reversed), or at random in the loop play modes (RAND).
+  R1 = R_LOOPING
+  M1 = R1
+  R0 = DM(M1, I1)
+  R0 = PASS R0
+  IF EQ JUMP direction_done
+  R0 = 0
+  DM(M1, I1) = R0               ; a grain never loops
+  R1 = R_STEPW
+  M2 = R1
+  R2 = DM(M2, I1)               ; the step's whole part
+  R1 = R_STEPF
+  M1 = R1
+  R3 = DM(M1, I1)               ; and its fraction
+  R0 = PASS R2
+  IF LT CALL negate             ; REV.L: its size, forward
+  R0 = 0x80000000
+  R0 = R11 AND R0
+  IF NE CALL negate             ; the top random bit reverses it
+  DM(M1, I1) = R3
+  DM(M2, I1) = R2
+direction_done:
+
+; A reversed grain plays down from its start: start it SIZE further on, so it sounds around POS too.
+  CALL timing
+  R1 = R_STEPW
+  M1 = R1
+  R0 = DM(M1, I1)
+  R0 = PASS R0
+  IF GE JUMP place
+  F1 = 0.5                      ; SIZE samples are SIZE / 2 words
+  F0 = F4 * F1
+  R0 = FIX F0
+  R8 = R8 + R0
+  R0 = DM(V_LENW)
+  R0 = R0 - 1
+  R8 = MIN(R8, R0)
+place:
+  R1 = R_POS
+  M1 = R1
+  DM(M1, I1) = R8
+  R0 = 0
+  R1 = R_FRAC
+  M1 = R1
+  DM(M1, I1) = R0
+  R0 = DM(V_LENW)
+  R1 = R_ENDW
+  M1 = R1
+  DM(M1, I1) = R0
+  R0 = 1
+  R1 = R_PLAYING
+  M1 = R1
+  DM(M1, I1) = R0
+
+; Its window: life 0, 1 / SIZE a sample.
+  R0 = 5
+  R0 = LSHIFT R6 BY R0
+  R1 = DM(V_GSTATE)
+  R0 = R0 + R1
+  I3 = R0
+  R0 = 1
+  DM(M3, I3) = R0               ; G_ACTIVE
+  F0 = 0.0
+  R1 = G_PHASE
+  M1 = R1
+  DM(M1, I3) = F0
+  F1 = RECIPS F4
+  F0 = F4 * F1                  ; refined once
+  F2 = 2.0
+  F0 = F2 - F0
+  F1 = F1 * F0
+  R2 = G_DPHASE                 ; (R1 would overwrite F1)
+  M1 = R2
+  DM(M1, I3) = F1
+  RTS
+
+; negate: the 64-bit step (R2 whole, R3 fraction) negated in place. Changes R0, R4, R5.
+negate:
+  R0 = 0
+  R4 = R0 - R3
+  R5 = R0 - R2
+  R3 = PASS R3
+  IF EQ JUMP negate_done        ; no borrow from a zero fraction
+  R5 = R5 - 1
+negate_done:
+  R3 = PASS R4
+  R2 = PASS R5
+  RTS
+
+.data VSTATE                    ; per voice: the last position starts at -1, so the first block counts as a new note
+.word 0, 0x2545f491, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x3c6ef372, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x5851f42d, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x7f4a7c15, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x1b873593, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x68e31da4, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x2c1b3c6d, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x297a2d39, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x6c8e9cf5, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x7ffd3c03, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x4a1c3b2e, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x19e4c2f1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x5f3759df, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x0b5ad4ec, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x71c2e3a5, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x3e8d1b07, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x2d6f8e13, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x6a09e667, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x3c6ef373, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x510e527f, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x1f83d9ab, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x5be0cd19, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x428a2f98, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x71374491, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x35b5dba5, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x69b5dba5, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x3956c25b, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x59f111f1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x123f82a4, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x2b1c5ed5, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x581807aa, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+.word 0, 0x12835b01, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
