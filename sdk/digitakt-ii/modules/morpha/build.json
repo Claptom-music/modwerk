@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "sources": ["src/main.c"],
+  "defsym": {},
+  "cflags": [],
+  "weak": [],
+  "subscribe": [],
+  "contribute": [
+    { "to": "core_machines", "order": 50, "data": "00000000", "relocs": [[0, "abs32", "sym:morpha_machine", 0]] }
+  ],
+  "collections": {},
+  "copied": [],
+  "regions": [],
+  "claims": ["machine:9"],
+  "requires": [],
+  "derive": null,
+  "sharc": { "source": "src/player.sharc", "players": [{ "type": 9, "entry": "morpha_player" }] },
+  "releases": { "1.17": { "defsym": {}, "cflags": [], "sites": [] } }
+}

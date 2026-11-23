@@ -1,0 +1,910 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
+; Morpha's wavetable player for the Digitakt II sound chip (OS 1.17), assembled by src/engine/elektron/sharc-asm.ts.
+;
+; The base's machine dispatcher jumps here for every voice of a Morpha track, once per 32-sample block, with the
+; registers of the stock sample player's call: R4 = the voice's record (byte address), R8 = its output slot, R12 = 32,
+; R14 = 32 - voice, and the caller's frame. The player writes the voice's 32 samples into the slot and returns as the
+; stock player does (CRET). Facts about the records: sdk/machines/digitakt-ii/elekloader/modwerk/MACHINES.md.
+;
+; The wavetable is the track's sample cut into waves of 2,048 samples (a shorter sample is one wave), or, with no
+; sample, the built-in table below: 16 waves of 256 samples, from sine through triangle, saw, square and pulse to two
+; vowel-like waves, made by tools/builtin-table.mjs from formulas. POS picks the place in the table and the player
+; morphs linearly between the two waves around it. The pitch is the record's step (TUNE, the note, pitch locks and
+; LFOs, as SAMPLE plays a sample), so a step of one sample per sample plays middle C.
+;
+; Each voice runs up to three oscillators (DETN: the two outer ones detuned up and down) and a sine one octave down
+; (SUB). WARP (SAMPLE's play mode) bends each oscillator's phase before the wave is read: BEND pushes it towards the
+; wave's ends, SYNC restarts the wave up to four times a cycle, MIRR plays it forward then back; FOLD folds the wave's
+; level instead. AMT sets how much.
+;
+; The two voices of a track (voice v plays track v / 2, the pair rendered one after the other in the same block)
+; play the same note: the second copies the first's block, so they never drift apart (Granula found a pair whose
+; grains differed partly cancelled) and a note costs one voice's work.
+;
+; Memory (Morpha's L2 range 0x200f0000-0x200fa000, loader byte addresses; claim dsp-region digitakt-ii/morpha-l2):
+;   code 0x200f0000, variables 0x200f3000, voice state 0x200f3100 (32 x 8 words), built-in table 0x200f4000
+;   (2,048 words, to 0x200f6000).
+; I registers hold byte addresses and M registers count words; DM(constant) takes a normal word address (byte / 4).
+; Sample memory: I = the record's word 0, M = a word; each word holds two 16-bit samples, the earlier one in its low
+; half (emulator dump of a 220 Hz test sample: 109.5 words a cycle, the low half the earlier sample).
+
+.equ RECB, 0x1d8                ; bytes per voice record
+.equ R_ADDR, 0                  ; record word: the sample's address, 0 for no sample
+.equ R_SAMPLES, 0x62            ; record word: the sample's length in samples
+.equ R_STEPF, 0x6a              ; record word: the step's fraction
+.equ R_STEPW, 0x6b              ; record word: the step's whole part, negative when the play mode reverses
+.equ R_PLAYING, 0x6e            ; record word: nonzero while a note plays
+.equ R_LOOPING, 0x6f            ; record word: 1 in the loop play modes
+.equ PREC0, 0x250738            ; voice 0's parameter record (byte address); 0xdc bytes per voice
+.equ PRECB, 0xdc
+.equ P_POS, 0x25                ; knob E (SAMPLE's START) as 0-1
+.equ P_DETN, 0x26               ; knob F (SAMPLE's LENGTH) as 0-1
+.equ P_SUB, 0x27                ; knob G (SAMPLE's LOOP position) as 0-1
+.equ P_AMT, 0x28                ; knob C (SAMPLE's crossfade) as 0-1
+
+.equ VARS, 0x200f3000
+.equ V, VARS / 4
+.equ V_SLOT, V + 0              ; the voice's output slot
+.equ V_MODE, V + 2              ; WARP: 0 BEND, 1 SYNC, 2 MIRR, 3 FOLD
+.equ V_INC, V + 3               ; the centre oscillator's phase step (cycles a sample)
+.equ V_INC1, V + 4              ; the upper detuned one's
+.equ V_INC2, V + 5              ; the lower detuned one's
+.equ V_SRC, V + 6               ; the table's address (the sample's, or the built-in table's)
+.equ V_FRAMES, V + 7            ; waves in the table
+.equ V_FLEN, V + 8              ; samples a wave
+.equ V_FLENF, V + 9             ; the same, as a float
+.equ V_OFF0, V + 10             ; the first wave's index in the table
+.equ V_OFF1, V + 11             ; the next wave's
+.equ V_T, V + 12                ; how far from the first wave to the next, 0-1
+.equ V_AMT, V + 13
+.equ V_DETN, V + 14
+.equ V_SUB, V + 15
+.equ V_POS, V + 16
+.equ V_G, V + 17                ; the outer oscillators' level
+.equ V_UNI, V + 18              ; nonzero: three oscillators
+.equ V_WGAIN, V + 19            ; the waves' output gain (with 1 / 32768)
+.equ V_SGAIN, V + 20            ; the sub's
+.equ V_1MA, V + 21              ; 1 - AMT (BEND)
+.equ V_SYNC, V + 22             ; 1 + 3 AMT (SYNC)
+.equ V_FOLDK, V + 23            ; (1 + 4 AMT) / 32768 (FOLD)
+.equ V_SAVE, V + 32             ; 24 saved registers
+
+.equ VSTATE, 0x200f3100         ; per voice 8 words: the three oscillators' phases, the sub's (floats, 0-1)
+.equ VSTATEB, 32
+.equ BUILTIN, 0x200f4000        ; the built-in table: 16 waves x 256 samples, packed as sample memory is
+
+.code 0x200f0000
+morpha_player:
+  DM(V_SAVE + 0) = R3
+  DM(V_SAVE + 1) = R5
+  DM(V_SAVE + 2) = R6
+  DM(V_SAVE + 3) = R7
+  DM(V_SAVE + 4) = R9
+  DM(V_SAVE + 5) = R10
+  DM(V_SAVE + 6) = R11
+  DM(V_SAVE + 7) = R15
+  DM(V_SAVE + 8) = I0
+  DM(V_SAVE + 9) = I1
+  DM(V_SAVE + 10) = I2
+  DM(V_SAVE + 11) = I3
+  DM(V_SAVE + 12) = M0
+  DM(V_SAVE + 13) = M1
+  DM(V_SAVE + 14) = M2
+  DM(V_SAVE + 15) = M3
+  DM(V_SAVE + 16) = L0
+  DM(V_SAVE + 17) = L1
+  DM(V_SAVE + 18) = L2
+  DM(V_SAVE + 19) = ASTATX
+  DM(V_SAVE + 20) = STKYX
+  DM(V_SAVE + 21) = R13
+  DM(V_SAVE + 22) = R14
+  L0 = 0
+  L1 = 0
+  L2 = 0
+  L3 = 0
+  L4 = 0
+  M0 = 1
+  M3 = 0
+  DM(V_SLOT) = R8
+  R0 = 32
+  R9 = R0 - R14                 ; R9: the voice, 0-31
+  R0 = 1
+  R0 = R9 AND R0
+  IF NE JUMP copy_pair          ; the second voice of the track plays what the first just played
+
+  R1 = VSTATEB
+  R0 = R9 * R1 (SSI)
+  R1 = VSTATE
+  R0 = R0 + R1
+  I2 = R0                       ; I2: this voice's state
+  R1 = PRECB
+  R0 = R9 * R1 (SSI)
+  R1 = PREC0
+  R0 = R0 + R1
+  I3 = R0                       ; I3: its parameter record
+  I1 = R4                       ; I1: its record
+
+; No note: silence.
+  R1 = R_PLAYING
+  M1 = R1
+  R0 = DM(M1, I1)
+  R0 = PASS R0
+  IF EQ JUMP silence
+
+; The knobs, each held in 0-1.
+  R1 = P_AMT
+  M1 = R1
+  F0 = DM(M1, I3)
+  CALL unit
+  DM(V_AMT) = F0
+  R1 = P_DETN
+  M1 = R1
+  F0 = DM(M1, I3)
+  CALL unit
+  DM(V_DETN) = F0
+  R1 = P_SUB
+  M1 = R1
+  F0 = DM(M1, I3)
+  CALL unit
+  DM(V_SUB) = F0
+  R1 = P_POS
+  M1 = R1
+  F0 = DM(M1, I3)
+  CALL unit
+  DM(V_POS) = F0
+
+; WARP from the play mode: the step's sign (REV) and the loop flag.
+  R1 = R_STEPW
+  M1 = R1
+  R2 = DM(M1, I1)               ; the step's whole part
+  R1 = R_STEPF
+  M1 = R1
+  R3 = DM(M1, I1)               ; and its fraction
+  R1 = R_LOOPING
+  M1 = R1
+  R7 = DM(M1, I1)
+  R0 = 0
+  COMP(R7, R0)
+  IF NE R7 = R0 + 1             ; R7: 1 in a loop mode
+  R6 = 0
+  R0 = PASS R2
+  IF LT CALL negate             ; R6 = 1 and the step's size, forward
+  R1 = 3
+  R1 = R1 - R7
+  R0 = PASS R6
+  IF NE R7 = PASS R1            ; FWD 0 BEND, FWD.L 1 SYNC, REV.L 2 MIRR, REV 3 FOLD
+  DM(V_MODE) = R7
+
+; The pitch: the step in cycles a sample.
+  F0 = FLOAT R2
+  R1 = -8
+  R3 = LSHIFT R3 BY R1          ; the fraction's top 24 bits
+  F1 = FLOAT R3
+  F4 = 0.000000059604645        ; 2^-24
+  F1 = F1 * F4
+  F0 = F0 + F1
+  F1 = 0.0218021333             ; cycles a sample at a step of one: 4 x 261.6256 / 48000 (the step counts quarter
+  F9 = F0 * F1                  ; samples; a float must be written here, an .equ name loads its value as an integer)
+  DM(V_INC) = F9
+
+; The table: the sample, or the built-in one.
+  R0 = DM(M3, I1)
+  R1 = R_SAMPLES
+  M1 = R1
+  R2 = DM(M1, I1)
+  R0 = PASS R0
+  IF EQ JUMP use_builtin
+  R1 = 4
+  COMP(R2, R1)
+  IF LT JUMP use_builtin
+  DM(V_SRC) = R0
+  R1 = -11
+  R3 = LSHIFT R2 BY R1          ; R3: whole waves of 2,048
+  R4 = 2048
+  R3 = PASS R3
+  IF NE JUMP table_set
+  R3 = 1                        ; a shorter sample is one wave
+  R4 = PASS R2
+  JUMP table_set
+use_builtin:
+  R0 = BUILTIN
+  DM(V_SRC) = R0
+  R3 = 16
+  R4 = 256
+table_set:
+  DM(V_FRAMES) = R3
+  DM(V_FLEN) = R4
+  F0 = FLOAT R4
+  DM(V_FLENF) = F0
+
+; POS: the two waves around it and how far between them.
+  R1 = R3 - 1                   ; R1: the last wave
+  F0 = DM(V_POS)
+  F2 = FLOAT R1
+  F0 = F0 * F2
+  R0 = FIX F0
+  F2 = FLOAT R0
+  COMP(F2, F0)
+  IF GT R0 = R0 - 1
+  F2 = FLOAT R0
+  F5 = F0 - F2                  ; F5: between, 0-1
+  R2 = 0
+  R0 = MAX(R0, R2)
+  R0 = MIN(R0, R1)
+  COMP(R0, R1)
+  IF GE F5 = F5 - F5            ; on the last wave there is no next
+  DM(V_T) = F5
+  R2 = R0 * R4 (SSI)
+  DM(V_OFF0) = R2
+  R2 = R2 + R4
+  DM(V_OFF1) = R2
+
+; DETN: the outer oscillators' pitch (up to +-3%, about half a semitone) and level; three only when turned up.
+  F0 = DM(V_DETN)
+  F1 = 0.03
+  F1 = F0 * F1
+  F2 = 1.0
+  F3 = F2 + F1
+  F3 = F9 * F3
+  DM(V_INC1) = F3
+  F4 = F2 - F1
+  F4 = F9 * F4
+  DM(V_INC2) = F4
+  F1 = 4.0
+  F1 = F0 * F1
+  F1 = MIN(F1, F2)
+  DM(V_G) = F1                  ; F1: the outer level
+  R0 = 0
+  F3 = 0.001
+  COMP(F0, F3)
+  IF GT R0 = R0 + 1
+  DM(V_UNI) = R0
+  R0 = PASS R0
+  IF EQ F1 = F1 - F1            ; one oscillator: no outer level in the gain
+
+; The gains: detuned oscillators add up as noise does, 1 / sqrt(1 + 2 g^2); the sub adds up to half again.
+  F3 = F1 * F1
+  F3 = F3 + F3
+  F3 = F3 + F2
+  F4 = RSQRTS F3                ; refined once (Newton): y (1.5 - 0.5 x y y)
+  F6 = F4 * F4
+  F6 = F6 * F3
+  F7 = 0.5
+  F6 = F6 * F7
+  F7 = 1.5
+  F6 = F7 - F6
+  F4 = F4 * F6                  ; F4: the unison gain
+  F6 = DM(V_SUB)
+  F7 = 0.5
+  F7 = F6 * F7
+  F7 = F7 + F2                  ; 1 + SUB / 2
+  F0 = RECIPS F7
+  F1 = F7 * F0                  ; refined once: x (2 - a x)
+  F3 = 2.0
+  F1 = F3 - F1
+  F0 = F0 * F1                  ; F0: 1 / (1 + SUB / 2)
+  F3 = 0.000012207031           ; 0.4 / 32768: SAMPLE's level (emulator: SAMPLE peaked at 0.4 of Morpha's
+  F4 = F4 * F0                  ; unscaled read of the same sample, 0.063 against 0.157)
+  F4 = F4 * F3
+  DM(V_WGAIN) = F4
+  F6 = F6 * F0
+  F6 = F6 * F3
+  DM(V_SGAIN) = F6
+
+; WARP's constants.
+  F0 = DM(V_AMT)
+  F1 = F2 - F0
+  DM(V_1MA) = F1
+  F1 = 3.0
+  F1 = F0 * F1
+  F1 = F1 + F2
+  DM(V_SYNC) = F1
+  F1 = 4.0
+  F1 = F0 * F1
+  F1 = F1 + F2
+  F3 = 0.000030517578           ; 1 / 32768
+  F1 = F1 * F3
+  DM(V_FOLDK) = F1
+
+; The block.
+  R0 = DM(V_SLOT)
+  I0 = R0
+  R0 = DM(V_SRC)
+  I4 = R0
+  R0 = BUILTIN
+  I3 = R0
+  R10 = 16                      ; read16's constants (R9 is F9, the step)
+
+  R11 = -16
+  R15 = 32
+sample_loop:
+  F8 = DM(M3, I2)
+  F9 = DM(V_INC)
+  CALL osc
+  DM(M3, I2) = F8
+  F13 = PASS F12
+  R0 = DM(V_UNI)
+  R0 = PASS R0
+  IF EQ JUMP sub_part
+  R1 = 1
+  M1 = R1
+  F8 = DM(M1, I2)
+  F9 = DM(V_INC1)
+  CALL osc
+  DM(M1, I2) = F8
+  F14 = PASS F12
+  R1 = 2
+  M1 = R1
+  F8 = DM(M1, I2)
+  F9 = DM(V_INC2)
+  CALL osc
+  DM(M1, I2) = F8
+  F14 = F14 + F12
+  F0 = DM(V_G)
+  F14 = F14 * F0
+  F13 = F13 + F14
+sub_part:
+  F0 = DM(V_WGAIN)
+  F13 = F13 * F0
+  F0 = DM(V_SGAIN)
+  F1 = 0.0
+  COMP(F0, F1)
+  IF EQ JUMP out
+  R1 = 3
+  M1 = R1
+  F8 = DM(M1, I2)
+  F9 = DM(V_INC)
+  F1 = 0.5
+  F9 = F9 * F1
+  CALL subosc
+  DM(M1, I2) = F8
+  F0 = DM(V_SGAIN)
+  F12 = F12 * F0
+  F13 = F13 + F12
+out:
+  DM(I0, M0) = F13
+  R15 = R15 - 1
+  IF NE JUMP sample_loop
+  JUMP done
+
+; The second voice of a track: the first voice's block, from the slot before this one.
+copy_pair:
+  R0 = DM(V_SLOT)
+  I0 = R0
+  R1 = -0x80
+  R0 = R0 + R1
+  I1 = R0
+  R15 = 32
+copy_loop:
+  R0 = DM(I1, M0)
+  DM(I0, M0) = R0
+  R15 = R15 - 1
+  IF NE JUMP copy_loop
+  JUMP done
+
+silence:
+  R0 = DM(V_SLOT)
+  I0 = R0
+  R0 = 0
+  R15 = 32
+silence_loop:
+  DM(I0, M0) = R0
+  R15 = R15 - 1
+  IF NE JUMP silence_loop
+
+done:
+  R3 = DM(V_SAVE + 0)
+  R5 = DM(V_SAVE + 1)
+  R6 = DM(V_SAVE + 2)
+  R7 = DM(V_SAVE + 3)
+  R9 = DM(V_SAVE + 4)
+  R10 = DM(V_SAVE + 5)
+  R11 = DM(V_SAVE + 6)
+  R15 = DM(V_SAVE + 7)
+  I0 = DM(V_SAVE + 8)
+  I1 = DM(V_SAVE + 9)
+  I2 = DM(V_SAVE + 10)
+  I3 = DM(V_SAVE + 11)
+  M0 = DM(V_SAVE + 12)
+  M1 = DM(V_SAVE + 13)
+  M2 = DM(V_SAVE + 14)
+  M3 = DM(V_SAVE + 15)
+  L0 = DM(V_SAVE + 16)
+  L1 = DM(V_SAVE + 17)
+  L2 = DM(V_SAVE + 18)
+  R13 = DM(V_SAVE + 21)
+  R14 = DM(V_SAVE + 22)
+  ASTATX = DM(V_SAVE + 19)
+  STKYX = DM(V_SAVE + 20)
+  CRET
+
+; unit: F0 held in 0-1. Changes F1.
+unit:
+  F1 = 0.0
+  F0 = MAX(F0, F1)
+  F1 = 1.0
+  F0 = MIN(F0, F1)
+  RTS
+
+; osc: one oscillator's sample. F8 = its phase (advanced in place), F9 = its step; returns F12, the wave's value in
+; 16-bit units. Reads the table through I4 (R10, R11: the sign extension). Changes R0-R6, F7, M4.
+osc:
+  F8 = F8 + F9
+  F0 = 1.0
+  COMP(F8, F0)
+  IF GE F8 = F8 - F0
+  R0 = DM(V_MODE)
+  R1 = 1
+  COMP(R0, R1)
+  IF EQ JUMP warp_sync
+  IF LT JUMP warp_bend
+  R1 = 2
+  COMP(R0, R1)
+  IF EQ JUMP warp_mirr
+  F1 = PASS F8                  ; FOLD: the phase as it is
+  JUMP warp_done
+warp_bend:                      ; u = 2x - 1, u (1 - a + a |u|)
+  F1 = F8 + F8
+  F0 = 1.0
+  F1 = F1 - F0
+  F2 = ABS F1
+  F3 = DM(V_AMT)
+  F2 = F2 * F3
+  F3 = DM(V_1MA)
+  F2 = F2 + F3
+  F1 = F1 * F2
+  F0 = 0.5
+  F1 = F1 * F0
+  F1 = F1 + F0
+  JUMP warp_done
+warp_sync:                      ; the fraction of x (1 + 3a)
+  F3 = DM(V_SYNC)
+  F1 = F8 * F3
+  R0 = FIX F1
+  F2 = FLOAT R0
+  COMP(F2, F1)
+  IF GT R0 = R0 - 1
+  F2 = FLOAT R0
+  F1 = F1 - F2
+  JUMP warp_done
+warp_mirr:                      ; towards 2x, then 2 - 2x
+  F2 = F8 + F8
+  F0 = 2.0
+  F3 = F0 - F2
+  F0 = 0.5
+  COMP(F8, F0)
+  IF GE F2 = PASS F3
+  F2 = F2 - F8
+  F3 = DM(V_AMT)
+  F2 = F2 * F3
+  F1 = F8 + F2
+warp_done:
+; Read the wave at F1 (0-1): two neighbouring samples, linearly, in this wave and the next.
+  F0 = DM(V_FLENF)
+  F1 = F1 * F0
+  R0 = FIX F1
+  F2 = FLOAT R0
+  COMP(F2, F1)
+  IF GT R0 = R0 - 1
+  F2 = FLOAT R0
+  F7 = F1 - F2                  ; F7: between the two samples
+  R1 = DM(V_FLEN)
+  R2 = 0
+  R0 = MAX(R0, R2)
+  R2 = R1 - 1
+  R0 = MIN(R0, R2)              ; R0: the first sample
+  R2 = R0 + 1
+  COMP(R2, R1)
+  IF GE R2 = R2 - R1            ; R2: the next, round the wave
+  R3 = DM(V_OFF0)
+  R4 = R2 + R3
+  CALL read16
+  R6 = PASS R5
+  R4 = R0 + R3
+  CALL read16
+  F5 = FLOAT R5
+  F6 = FLOAT R6
+  F6 = F6 - F5
+  F6 = F6 * F7
+  F12 = F5 + F6                 ; this wave
+  F4 = DM(V_T)
+  F0 = 0.0
+  COMP(F4, F0)
+  IF EQ JUMP read_done
+  R3 = DM(V_OFF1)
+  R4 = R2 + R3
+  CALL read16
+  R6 = PASS R5
+  R4 = R0 + R3
+  CALL read16
+  F5 = FLOAT R5
+  F6 = FLOAT R6
+  F6 = F6 - F5
+  F6 = F6 * F7
+  F5 = F5 + F6                  ; the next wave
+  F5 = F5 - F12
+  F5 = F5 * F4
+  F12 = F12 + F5
+read_done:
+  R0 = DM(V_MODE)
+  R1 = 3
+  COMP(R0, R1)
+  IF NE RTS
+; FOLD: the level times 1 + 4a, folded back into -1..1 (a triangle of period 4).
+  F0 = DM(V_FOLDK)
+  F1 = F12 * F0
+  F0 = 1.0
+  F1 = F1 + F0                  ; u = t + 1
+  F0 = 0.25
+  F2 = F1 * F0
+  R0 = FIX F2
+  F3 = FLOAT R0
+  COMP(F3, F2)
+  IF GT R0 = R0 - 1
+  F3 = FLOAT R0
+  F0 = 4.0
+  F3 = F3 * F0
+  F1 = F1 - F3                  ; u mod 4
+  F3 = F0 - F1
+  F0 = 2.0
+  COMP(F1, F0)
+  IF GT F1 = PASS F3
+  F0 = 1.0
+  F1 = F1 - F0
+  F0 = 32768.0
+  F12 = F1 * F0
+  RTS
+
+; subosc: the built-in table's first wave (a sine) through I3. F8 = its phase (advanced in place), F9 = its step;
+; returns F12 in 16-bit units. Changes R0-R2, R5, R6, F7, M4.
+subosc:
+  F8 = F8 + F9
+  F0 = 1.0
+  COMP(F8, F0)
+  IF GE F8 = F8 - F0
+  F0 = 256.0
+  F1 = F8 * F0
+  R0 = FIX F1
+  F2 = FLOAT R0
+  COMP(F2, F1)
+  IF GT R0 = R0 - 1
+  F2 = FLOAT R0
+  F7 = F1 - F2
+  R1 = 255
+  R2 = R0 + 1
+  R2 = R2 AND R1
+  R0 = R0 AND R1
+  R4 = PASS R2
+  CALL read16b
+  R6 = PASS R5
+  R4 = PASS R0
+  CALL read16b
+  F5 = FLOAT R5
+  F6 = FLOAT R6
+  F6 = F6 - F5
+  F6 = F6 * F7
+  F12 = F5 + F6
+  RTS
+
+; read16: R5 = the table's sample R4 through I4, sign-extended. A word holds two 16-bit samples, the earlier one in
+; its low half (the stock player's sample memory, and the built-in table packed the same way). Needs R9 = -1,
+; R10 = 16, R11 = -16. Changes R1, R4, R5, M4.
+read16:
+  R1 = 1
+  R5 = R4 AND R1                ; odd?
+  R1 = -1
+  R4 = LSHIFT R4 BY R1          ; the word
+  M4 = R4
+  R1 = R5 * R10 (SSI)
+  R1 = R10 - R1                 ; 16 for an even sample (the low half), 0 for an odd one
+  R5 = DM(M4, I4)
+  R5 = LSHIFT R5 BY R1
+  R5 = ASHIFT R5 BY R11
+  RTS
+
+; read16b: the same through I3 (the built-in table).
+read16b:
+  R1 = 1
+  R5 = R4 AND R1
+  R1 = -1
+  R4 = LSHIFT R4 BY R1
+  M4 = R4
+  R1 = R5 * R10 (SSI)
+  R1 = R10 - R1
+  R5 = DM(M4, I3)
+  R5 = LSHIFT R5 BY R1
+  R5 = ASHIFT R5 BY R11
+  RTS
+
+; negate: the 64-bit step (R2 whole, R3 fraction) negated in place, and R6 = 1. Changes R0, R4, R5.
+negate:
+  R6 = 1
+  R0 = 0
+  R4 = R0 - R3
+  R5 = R0 - R2
+  R3 = PASS R3
+  IF EQ JUMP negate_done        ; no borrow from a zero fraction
+  R5 = R5 - 1
+negate_done:
+  R3 = PASS R4
+  R2 = PASS R5
+  RTS
+
+.data VSTATE
+.space 1024
+
+.data BUILTIN
+; BEGIN BUILTIN (written by tools/builtin-table.mjs; do not edit by hand)
+; wave 1
+.word 0x02af0000, 0x080c055e, 0x0d630ab8, 0x12b3100c, 0x17f71557, 0x1d2c1a93, 0x224f1fc0, 0x275d24d9
+.word 0x2c5329db, 0x312d2ec4, 0x35e9338f, 0x3a84383b, 0x3efb3cc4, 0x434a4128, 0x47714563, 0x4b6b4974
+.word 0x4f374d57, 0x52d2510b, 0x563a548c, 0x596c57da, 0x5c685af1, 0x5f2a5dd0, 0x61b26076, 0x63fe62e0
+.word 0x660c650d, 0x67db66fb, 0x696a68aa, 0x6ab86a19, 0x6bc46b46, 0x6c8d6c31, 0x6d146cd9, 0x6d586d3e
+.word 0x6d586d60, 0x6d146d3e, 0x6c8d6cd9, 0x6bc46c31, 0x6ab86b46, 0x696a6a19, 0x67db68aa, 0x660c66fb
+.word 0x63fe650d, 0x61b262e0, 0x5f2a6076, 0x5c685dd0, 0x596c5af1, 0x563a57da, 0x52d2548c, 0x4f37510b
+.word 0x4b6b4d57, 0x47714974, 0x434a4563, 0x3efb4128, 0x3a843cc4, 0x35e9383b, 0x312d338f, 0x2c532ec4
+.word 0x275d29db, 0x224f24d9, 0x1d2c1fc0, 0x17f71a93, 0x12b31557, 0x0d63100c, 0x080c0ab8, 0x02af055e
+.word 0xfd510000, 0xf7f4faa2, 0xf29df548, 0xed4deff4, 0xe809eaa9, 0xe2d4e56d, 0xddb1e040, 0xd8a3db27
+.word 0xd3add625, 0xced3d13c, 0xca17cc71, 0xc57cc7c5, 0xc105c33c, 0xbcb6bed8, 0xb88fba9d, 0xb495b68c
+.word 0xb0c9b2a9, 0xad2eaef5, 0xa9c6ab74, 0xa694a826, 0xa398a50f, 0xa0d6a230, 0x9e4e9f8a, 0x9c029d20
+.word 0x99f49af3, 0x98259905, 0x96969756, 0x954895e7, 0x943c94ba, 0x937393cf, 0x92ec9327, 0x92a892c2
+.word 0x92a892a0, 0x92ec92c2, 0x93739327, 0x943c93cf, 0x954894ba, 0x969695e7, 0x98259756, 0x99f49905
+.word 0x9c029af3, 0x9e4e9d20, 0xa0d69f8a, 0xa398a230, 0xa694a50f, 0xa9c6a826, 0xad2eab74, 0xb0c9aef5
+.word 0xb495b2a9, 0xb88fb68c, 0xbcb6ba9d, 0xc105bed8, 0xc57cc33c, 0xca17c7c5, 0xced3cc71, 0xd3add13c
+.word 0xd8a3d625, 0xddb1db27, 0xe2d4e040, 0xe809e56d, 0xed4deaa9, 0xf29deff4, 0xf7f4f548, 0xfd51faa2
+; wave 2
+.word 0x02550000, 0x06fe04aa, 0x0ba30951, 0x10440df4, 0x14dd1292, 0x196d1727, 0x1df21bb1, 0x226a2030
+.word 0x26d324a0, 0x2b2a2901, 0x2f6f2d4f, 0x339f3189, 0x37b835ae, 0x3bb939bc, 0x3fa13db0, 0x436d418a
+.word 0x471c4548, 0x4aac48e8, 0x4e1d4c69, 0x516c4fc9, 0x549a5307, 0x57a35623, 0x5a89591b, 0x5d485bed
+.word 0x5fe25e9a, 0x62546120, 0x649f637e, 0x66c265b5, 0x68bb67c3, 0x6a8f69a9, 0x6c2e6b69, 0x6d3a6ccf
+.word 0x6d3a6d60, 0x6c2e6ccf, 0x6a8f6b69, 0x68bb69a9, 0x66c267c3, 0x649f65b5, 0x6254637e, 0x5fe26120
+.word 0x5d485e9a, 0x5a895bed, 0x57a3591b, 0x549a5623, 0x516c5307, 0x4e1d4fc9, 0x4aac4c69, 0x471c48e8
+.word 0x436d4548, 0x3fa1418a, 0x3bb93db0, 0x37b839bc, 0x339f35ae, 0x2f6f3189, 0x2b2a2d4f, 0x26d32901
+.word 0x226a24a0, 0x1df22030, 0x196d1bb1, 0x14dd1727, 0x10441292, 0x0ba30df4, 0x06fe0951, 0x025504aa
+.word 0xfdab0000, 0xf902fb56, 0xf45df6af, 0xefbcf20c, 0xeb23ed6e, 0xe693e8d9, 0xe20ee44f, 0xdd96dfd0
+.word 0xd92ddb60, 0xd4d6d6ff, 0xd091d2b1, 0xcc61ce77, 0xc848ca52, 0xc447c644, 0xc05fc250, 0xbc93be76
+.word 0xb8e4bab8, 0xb554b718, 0xb1e3b397, 0xae94b037, 0xab66acf9, 0xa85da9dd, 0xa577a6e5, 0xa2b8a413
+.word 0xa01ea166, 0x9dac9ee0, 0x9b619c82, 0x993e9a4b, 0x9745983d, 0x95719657, 0x93d29497, 0x92c69331
+.word 0x92c692a0, 0x93d29331, 0x95719497, 0x97459657, 0x993e983d, 0x9b619a4b, 0x9dac9c82, 0xa01e9ee0
+.word 0xa2b8a166, 0xa577a413, 0xa85da6e5, 0xab66a9dd, 0xae94acf9, 0xb1e3b037, 0xb554b397, 0xb8e4b718
+.word 0xbc93bab8, 0xc05fbe76, 0xc447c250, 0xc848c644, 0xcc61ca52, 0xd091ce77, 0xd4d6d2b1, 0xd92dd6ff
+.word 0xdd96db60, 0xe20edfd0, 0xe693e44f, 0xeb23e8d9, 0xefbced6e, 0xf45df20c, 0xf902f6af, 0xfdabfb56
+; wave 3
+.word 0x02060000, 0x0610040b, 0x0a190815, 0x0e200c1d, 0x12241023, 0x16231424, 0x1a1d1821, 0x1e101c17
+.word 0x21fd2008, 0x25e223f0, 0x29bd27d1, 0x2d8f2ba8, 0x31572f75, 0x35133336, 0x38c336ed, 0x3c663a96
+.word 0x3ffc3e33, 0x438341c1, 0x46fc4541, 0x4a6548b2, 0x4dbe4c13, 0x51064f64, 0x543d52a4, 0x576355d2
+.word 0x5a7758f0, 0x5d795bfb, 0x60695ef3, 0x634761da, 0x661064ad, 0x68ce676f, 0x6b646a25, 0x6d216c6e
+.word 0x6d216d60, 0x6b646c6e, 0x68ce6a25, 0x6610676f, 0x634764ad, 0x606961da, 0x5d795ef3, 0x5a775bfb
+.word 0x576358f0, 0x543d55d2, 0x510652a4, 0x4dbe4f64, 0x4a654c13, 0x46fc48b2, 0x43834541, 0x3ffc41c1
+.word 0x3c663e33, 0x38c33a96, 0x351336ed, 0x31573336, 0x2d8f2f75, 0x29bd2ba8, 0x25e227d1, 0x21fd23f0
+.word 0x1e102008, 0x1a1d1c17, 0x16231821, 0x12241424, 0x0e201023, 0x0a190c1d, 0x06100815, 0x0206040b
+.word 0xfdfa0000, 0xf9f0fbf5, 0xf5e7f7eb, 0xf1e0f3e3, 0xeddcefdd, 0xe9ddebdc, 0xe5e3e7df, 0xe1f0e3e9
+.word 0xde03dff8, 0xda1edc10, 0xd643d82f, 0xd271d458, 0xcea9d08b, 0xcaedccca, 0xc73dc913, 0xc39ac56a
+.word 0xc004c1cd, 0xbc7dbe3f, 0xb904babf, 0xb59bb74e, 0xb242b3ed, 0xaefab09c, 0xabc3ad5c, 0xa89daa2e
+.word 0xa589a710, 0xa287a405, 0x9f97a10d, 0x9cb99e26, 0x99f09b53, 0x97329891, 0x949c95db, 0x92df9392
+.word 0x92df92a0, 0x949c9392, 0x973295db, 0x99f09891, 0x9cb99b53, 0x9f979e26, 0xa287a10d, 0xa589a405
+.word 0xa89da710, 0xabc3aa2e, 0xaefaad5c, 0xb242b09c, 0xb59bb3ed, 0xb904b74e, 0xbc7dbabf, 0xc004be3f
+.word 0xc39ac1cd, 0xc73dc56a, 0xcaedc913, 0xcea9ccca, 0xd271d08b, 0xd643d458, 0xda1ed82f, 0xde03dc10
+.word 0xe1f0dff8, 0xe5e3e3e9, 0xe9dde7df, 0xeddcebdc, 0xf1e0efdd, 0xf5e7f3e3, 0xf9f0f7eb, 0xfdfafbf5
+; wave 4
+.word 0x01bf0000, 0x053e037f, 0x08bd06fd, 0x0c3b0a7c, 0x0fba0dfb, 0x13391179, 0x16b714f8, 0x1a361877
+.word 0x1db51bf6, 0x21341f74, 0x24b322f3, 0x28312672, 0x2bb029f1, 0x2f2f2d70, 0x32ae30ef, 0x362d346e
+.word 0x39ad37ed, 0x3d2c3b6c, 0x40ab3eec, 0x442b426b, 0x47aa45eb, 0x4b2a496a, 0x4eaa4cea, 0x522a506a
+.word 0x55ab53eb, 0x592c576c, 0x5cae5aed, 0x60315e70, 0x63b361f2, 0x67406577, 0x6ab16906, 0x6d0a6c18
+.word 0x6d0a6d60, 0x6ab16c18, 0x67406906, 0x63b36577, 0x603161f2, 0x5cae5e70, 0x592c5aed, 0x55ab576c
+.word 0x522a53eb, 0x4eaa506a, 0x4b2a4cea, 0x47aa496a, 0x442b45eb, 0x40ab426b, 0x3d2c3eec, 0x39ad3b6c
+.word 0x362d37ed, 0x32ae346e, 0x2f2f30ef, 0x2bb02d70, 0x283129f1, 0x24b32672, 0x213422f3, 0x1db51f74
+.word 0x1a361bf6, 0x16b71877, 0x133914f8, 0x0fba1179, 0x0c3b0dfb, 0x08bd0a7c, 0x053e06fd, 0x01bf037f
+.word 0xfe410000, 0xfac2fc81, 0xf743f903, 0xf3c5f584, 0xf046f205, 0xecc7ee87, 0xe949eb08, 0xe5cae789
+.word 0xe24be40a, 0xdecce08c, 0xdb4ddd0d, 0xd7cfd98e, 0xd450d60f, 0xd0d1d290, 0xcd52cf11, 0xc9d3cb92
+.word 0xc653c813, 0xc2d4c494, 0xbf55c114, 0xbbd5bd95, 0xb856ba15, 0xb4d6b696, 0xb156b316, 0xadd6af96
+.word 0xaa55ac15, 0xa6d4a894, 0xa352a513, 0x9fcfa190, 0x9c4d9e0e, 0x98c09a89, 0x954f96fa, 0x92f693e8
+.word 0x92f692a0, 0x954f93e8, 0x98c096fa, 0x9c4d9a89, 0x9fcf9e0e, 0xa352a190, 0xa6d4a513, 0xaa55a894
+.word 0xadd6ac15, 0xb156af96, 0xb4d6b316, 0xb856b696, 0xbbd5ba15, 0xbf55bd95, 0xc2d4c114, 0xc653c494
+.word 0xc9d3c813, 0xcd52cb92, 0xd0d1cf11, 0xd450d290, 0xd7cfd60f, 0xdb4dd98e, 0xdeccdd0d, 0xe24be08c
+.word 0xe5cae40a, 0xe949e789, 0xecc7eb08, 0xf046ee87, 0xf3c5f205, 0xf743f584, 0xfac2f903, 0xfe41fc81
+; wave 5
+.word 0x15300000, 0x32bf26cd, 0x3b64390d, 0x3c393beb, 0x3deb3cec, 0x3fc83eea, 0x416b4094, 0x433e4252
+.word 0x45004423, 0x46c345df, 0x489147ab, 0x4a554973, 0x4c204b3a, 0x4dea4d06, 0x4fb24ece, 0x517e5098
+.word 0x53485263, 0x5513542d, 0x56de55f9, 0x58a957c3, 0x5a75598f, 0x5c405b5b, 0x5e0c5d26, 0x5fd85ef2
+.word 0x61a560bf, 0x6372628b, 0x653f6458, 0x670d6626, 0x68db67f4, 0x6ab169c4, 0x6c726b9b, 0x6d606d15
+.word 0x6c896d35, 0x69ee6b67, 0x667f6841, 0x62fc64bc, 0x5f81613f, 0x5c055dc3, 0x588a5a47, 0x551056cd
+.word 0x51965353, 0x4e1c4fd9, 0x4aa34c60, 0x472948e6, 0x43b0456d, 0x403741f4, 0x3cbe3e7a, 0x39453b02
+.word 0x35cc3789, 0x32533410, 0x2edb3097, 0x2b622d1e, 0x27e929a6, 0x2471262d, 0x20f822b5, 0x1d801f3c
+.word 0x1a071bc4, 0x168f184b, 0x131614d3, 0x0f9e115a, 0x0c250de2, 0x08ad0a69, 0x053506f1, 0x01bc0378
+.word 0xfe440000, 0xfacbfc88, 0xf753f90f, 0xf3dbf597, 0xf062f21e, 0xeceaeea6, 0xe971eb2d, 0xe5f9e7b5
+.word 0xe280e43c, 0xdf08e0c4, 0xdb8fdd4b, 0xd817d9d3, 0xd49ed65a, 0xd125d2e2, 0xcdadcf69, 0xca34cbf0
+.word 0xc6bbc877, 0xc342c4fe, 0xbfc9c186, 0xbc50be0c, 0xb8d7ba93, 0xb55db71a, 0xb1e4b3a0, 0xae6ab027
+.word 0xaaf0acad, 0xa776a933, 0xa3fba5b9, 0xa07fa23d, 0x9d049ec1, 0x99819b44, 0x961297bf, 0x93779499
+.word 0x92a092cb, 0x938e92eb, 0x954f9465, 0x9725963c, 0x98f3980c, 0x9ac199da, 0x9c8e9ba8, 0x9e5b9d75
+.word 0xa0289f41, 0xa1f4a10e, 0xa3c0a2da, 0xa58ba4a5, 0xa757a671, 0xa922a83d, 0xaaedaa07, 0xacb8abd3
+.word 0xae82ad9d, 0xb04eaf68, 0xb216b132, 0xb3e0b2fa, 0xb5abb4c6, 0xb76fb68d, 0xb93db855, 0xbb00ba21
+.word 0xbcc2bbdd, 0xbe95bdae, 0xc038bf6c, 0xc215c116, 0xc3c7c314, 0xc49cc415, 0xcd41c6f3, 0xead0d933
+; wave 6
+.word 0x28940000, 0x5ffb49f9, 0x6d606aaa, 0x6b156c73, 0x6a866a82, 0x6a4c6a8a, 0x699e69eb, 0x69526973
+.word 0x68e26921, 0x687568a5, 0x681d684b, 0x67b167e7, 0x67546780, 0x66f46726, 0x669166c1, 0x66356663
+.word 0x65d46605, 0x657665a4, 0x65196548, 0x64b964e9, 0x645d648b, 0x63ff642f, 0x63a263d0, 0x63466374
+.word 0x62e86317, 0x628c62ba, 0x6230625e, 0x61d56202, 0x617961a7, 0x6121614c, 0x60bf60f5, 0x5ff46070
+.word 0x5e445f3c, 0x5bb25d11, 0x58b55a39, 0x55ae5731, 0x52ac542d, 0x4fa8512a, 0x4ca64e27, 0x49a44b25
+.word 0x46a14822, 0x439f4520, 0x409d421e, 0x3d9c3f1c, 0x3a9a3c1b, 0x37983919, 0x34973617, 0x31953316
+.word 0x2e943014, 0x2b922d13, 0x28912a12, 0x25902710, 0x228e240f, 0x1f8d210e, 0x1c8c1e0c, 0x198a1b0b
+.word 0x1689180a, 0x13881508, 0x10871207, 0x0d850f06, 0x0a840c05, 0x07830904, 0x04820602, 0x01810301
+.word 0xfe7f0000, 0xfb7efcff, 0xf87df9fe, 0xf57cf6fc, 0xf27bf3fb, 0xef79f0fa, 0xec78edf9, 0xe977eaf8
+.word 0xe676e7f6, 0xe374e4f5, 0xe073e1f4, 0xdd72def2, 0xda70dbf1, 0xd76fd8f0, 0xd46ed5ee, 0xd16cd2ed
+.word 0xce6bcfec, 0xcb69ccea, 0xc868c9e9, 0xc566c6e7, 0xc264c3e5, 0xbf63c0e4, 0xbc61bde2, 0xb95fbae0
+.word 0xb65cb7de, 0xb35ab4db, 0xb058b1d9, 0xad54aed6, 0xaa52abd3, 0xa74ba8cf, 0xa44ea5c7, 0xa1bca2ef
+.word 0xa00ca0c4, 0x9f419f90, 0x9edf9f0b, 0x9e879eb4, 0x9e2b9e59, 0x9dd09dfe, 0x9d749da2, 0x9d189d46
+.word 0x9cba9ce9, 0x9c5e9c8c, 0x9c019c30, 0x9ba39bd1, 0x9b479b75, 0x9ae79b17, 0x9a8a9ab8, 0x9a2c9a5c
+.word 0x99cb99fb, 0x996f999d, 0x990c993f, 0x98ac98da, 0x984f9880, 0x97e39819, 0x978b97b5, 0x971e975b
+.word 0x96ae96df, 0x9662968d, 0x95b49615, 0x957a9576, 0x94eb957e, 0x92a0938d, 0xa0059556, 0xd76cb607
+; wave 7
+.word 0x29290000, 0x60ed4aea, 0x6d606b43, 0x69a66bbd, 0x67b5685f, 0x661c670b, 0x640c650a, 0x62606332
+.word 0x6090617f, 0x5ec35fa3, 0x5d0b5de9, 0x5b3f5c25, 0x59815a5e, 0x57c258a3, 0x55fe56df, 0x54425520
+.word 0x52815363, 0x50c351a1, 0x4f064fe5, 0x4d464e26, 0x4b894c67, 0x49cb4aab, 0x480d48ec, 0x4651472f
+.word 0x44934572, 0x42d643b4, 0x411941f8, 0x3f5c403a, 0x3d9f3e7d, 0x3be23cc1, 0x3a253b04, 0x38693947
+.word 0x36ac378a, 0x34ef35ce, 0x33333411, 0x31763254, 0x2fba3098, 0x2dfd2edc, 0x2c412d1f, 0x2a842b63
+.word 0x28c829a6, 0x270c27ea, 0x254f262d, 0x23932471, 0x21d722b5, 0x201a20f8, 0x1e5e1f3c, 0x1ca21d80
+.word 0x1ae51bc3, 0x19291a07, 0x176d184b, 0x15b1168f, 0x13f414d3, 0x12381316, 0x107c115a, 0x0ec00f9e
+.word 0x0d030de2, 0x0b470c25, 0x098b0a69, 0x07cf08ad, 0x061306f1, 0x04560535, 0x029a0378, 0x00de01bc
+.word 0xff220000, 0xfd66fe44, 0xfbaafc88, 0xf9edfacb, 0xf831f90f, 0xf675f753, 0xf4b9f597, 0xf2fdf3db
+.word 0xf140f21e, 0xef84f062, 0xedc8eea6, 0xec0cecea, 0xea4feb2d, 0xe893e971, 0xe6d7e7b5, 0xe51be5f9
+.word 0xe35ee43d, 0xe1a2e280, 0xdfe6e0c4, 0xde29df08, 0xdc6ddd4b, 0xdab1db8f, 0xd8f4d9d3, 0xd738d816
+.word 0xd57cd65a, 0xd3bfd49d, 0xd203d2e1, 0xd046d124, 0xce8acf68, 0xcccdcdac, 0xcb11cbef, 0xc954ca32
+.word 0xc797c876, 0xc5dbc6b9, 0xc41ec4fc, 0xc261c33f, 0xc0a4c183, 0xbee7bfc6, 0xbd2abe08, 0xbb6dbc4c
+.word 0xb9afba8e, 0xb7f3b8d1, 0xb635b714, 0xb477b555, 0xb2bab399, 0xb0fab1da, 0xaf3db01b, 0xad7fae5f
+.word 0xabbeac9d, 0xaa02aae0, 0xa83ea921, 0xa67fa75d, 0xa4c1a5a2, 0xa2f5a3db, 0xa13da217, 0x9f70a05d
+.word 0x9da09e81, 0x9bf49cce, 0x99e49af6, 0x984b98f5, 0x965a97a1, 0x92a09443, 0x9f1394bd, 0xd6d7b516
+; wave 8
+.word 0x29020000, 0x60ae4aab, 0x6d606b1b, 0x6a066bed, 0x687168ee, 0x673367f4, 0x657f664f, 0x642f64d3
+.word 0x62bb637c, 0x614961fc, 0x5fed609d, 0x5e7d5f35, 0x5d1b5dca, 0x5bb75c6b, 0x5a4f5b02, 0x58ef599f
+.word 0x578a583d, 0x562756d7, 0x54c55577, 0x53615413, 0x520052b0, 0x509e5150, 0x4f3c4fec, 0x4ddb4e8b
+.word 0x4c784d2a, 0x4b174bc8, 0x49b64a67, 0x48544905, 0x46f447a4, 0x45924643, 0x443144e2, 0x42d04381
+.word 0x416f4220, 0x400e40bf, 0x3eae3f5e, 0x3d4d3dfd, 0x3bec3c9c, 0x3a8b3b3c, 0x392b39db, 0x37ca387a
+.word 0x366a371a, 0x350935b9, 0x33a93459, 0x324832f8, 0x30e83198, 0x2f883038, 0x2e272ed8, 0x2cc72d77
+.word 0x2b672c17, 0x2a072ab7, 0x28a72957, 0x274827f8, 0x25e72697, 0x248a2539, 0x232823d9, 0x21cb2278
+.word 0x206e211e, 0x1f0b1fbc, 0x1dbb1e61, 0x1c531d0e, 0x1afd1b99, 0x1a021a8b, 0x15d118ba, 0x09071096
+.word 0xf6f90000, 0xea2fef6a, 0xe5fee746, 0xe503e575, 0xe3ade467, 0xe245e2f2, 0xe0f5e19f, 0xdf92e044
+.word 0xde35dee2, 0xdcd8dd88, 0xdb76dc27, 0xda19dac7, 0xd8b8d969, 0xd759d808, 0xd5f9d6a9, 0xd499d549
+.word 0xd339d3e9, 0xd1d9d289, 0xd078d128, 0xcf18cfc8, 0xcdb8ce68, 0xcc57cd08, 0xcaf7cba7, 0xc996ca47
+.word 0xc836c8e6, 0xc6d5c786, 0xc575c625, 0xc414c4c4, 0xc2b3c364, 0xc152c203, 0xbff2c0a2, 0xbe91bf41
+.word 0xbd30bde0, 0xbbcfbc7f, 0xba6ebb1e, 0xb90cb9bd, 0xb7acb85c, 0xb64ab6fb, 0xb4e9b599, 0xb388b438
+.word 0xb225b2d6, 0xb0c4b175, 0xaf62b014, 0xae00aeb0, 0xac9fad50, 0xab3babed, 0xa9d9aa89, 0xa876a929
+.word 0xa711a7c3, 0xa5b1a661, 0xa449a4fe, 0xa2e5a395, 0xa183a236, 0xa013a0cb, 0x9eb79f63, 0x9d459e04
+.word 0x9bd19c84, 0x9a819b2d, 0x98cd99b1, 0x978f980c, 0x95fa9712, 0x92a09413, 0x9f5294e5, 0xd6feb555
+; wave 9
+.word 0x28c90000, 0x60524a4f, 0x6d606ae0, 0x6a926c33, 0x698569bf, 0x68ce694b, 0x67a2682d, 0x66d86738
+.word 0x65ea6668, 0x6500656f, 0x642a6497, 0x634163b6, 0x626662d2, 0x618961f9, 0x60a86117, 0x5fcf603b
+.word 0x5ef05f60, 0x5e145e81, 0x5d3a5da8, 0x5c5c5ccb, 0x5b825bef, 0x5aa75b15, 0x59cb5a39, 0x58f1595e
+.word 0x58165884, 0x573c57a9, 0x566156cf, 0x558655f4, 0x54ad5519, 0x53d2543f, 0x52f85365, 0x521e528b
+.word 0x514451b1, 0x506a50d7, 0x4f904ffd, 0x4eb64f23, 0x4ddc4e49, 0x4d034d70, 0x4c294c96, 0x4b504bbc
+.word 0x4a764ae3, 0x499d4a0a, 0x48c44930, 0x47ea4857, 0x4711477e, 0x463946a5, 0x455f45cc, 0x448744f2
+.word 0x43af441b, 0x42d54342, 0x41ff4269, 0x41274194, 0x404d40b9, 0x3f7b3fe5, 0x3e9f3f0e, 0x3dce3e34
+.word 0x3cfe3d69, 0x3c1c3c8b, 0x3b6b3bbf, 0x3a803b07, 0x39c039fa, 0x39e139ed, 0x321337fe, 0x1508266e
+.word 0xeaf80000, 0xcdedd992, 0xc61fc802, 0xc640c613, 0xc580c606, 0xc495c4f9, 0xc3e4c441, 0xc302c375
+.word 0xc232c297, 0xc161c1cc, 0xc085c0f2, 0xbfb3c01b, 0xbed9bf47, 0xbe01be6c, 0xbd2bbd97, 0xbc51bcbe
+.word 0xbb79bbe5, 0xbaa1bb0e, 0xb9c7ba34, 0xb8efb95b, 0xb816b882, 0xb73cb7a9, 0xb663b6d0, 0xb58ab5f6
+.word 0xb4b0b51d, 0xb3d7b444, 0xb2fdb36a, 0xb224b290, 0xb14ab1b7, 0xb070b0dd, 0xaf96b003, 0xaebcaf29
+.word 0xade2ae4f, 0xad08ad75, 0xac2eac9b, 0xab53abc1, 0xaa7aaae7, 0xa99faa0c, 0xa8c4a931, 0xa7eaa857
+.word 0xa70fa77c, 0xa635a6a2, 0xa559a5c7, 0xa47ea4eb, 0xa3a4a411, 0xa2c6a335, 0xa1eca258, 0xa110a17f
+.word 0xa031a0a0, 0x9f589fc5, 0x9e779ee9, 0x9d9a9e07, 0x9cbf9d2e, 0x9bd69c4a, 0x9b009b69, 0x9a169a91
+.word 0x99289998, 0x985e98c8, 0x973297d3, 0x967b96b5, 0x956e9641, 0x92a093cd, 0x9fae9520, 0xd737b5b1
+; wave 10
+.word 0x286c0000, 0x5fbc49b9, 0x6d606a82, 0x6b766ca3, 0x6b436b11, 0x6b656b75, 0x6b146b32, 0x6b246b18
+.word 0x6b116b21, 0x6b006b03, 0x6b046b04, 0x6af56afd, 0x6af46af3, 0x6af16af4, 0x6aea6aec, 0x6aea6aea
+.word 0x6ae66ae9, 0x6ae46ae4, 0x6ae36ae4, 0x6ae06ae1, 0x6adf6adf, 0x6ade6adf, 0x6adc6add, 0x6adc6adc
+.word 0x6ada6adb, 0x6ada6ada, 0x6ada6ada, 0x6ad96ad9, 0x6ad96ad9, 0x6ad86ad8, 0x6ad86ad8, 0x6ad86ad8
+.word 0x6ad86ad8, 0x6ad86ad8, 0x6ad86ad8, 0x6ad96ad8, 0x6ad96ad9, 0x6ada6ad9, 0x6ada6ada, 0x6ada6ada
+.word 0x6adc6adb, 0x6adc6adc, 0x6ade6add, 0x6adf6adf, 0x6ae06adf, 0x6ae36ae1, 0x6ae46ae4, 0x6ae66ae4
+.word 0x6aea6ae9, 0x6aea6aea, 0x6af16aec, 0x6af46af4, 0x6af56af3, 0x6b046afd, 0x6b006b04, 0x6b116b03
+.word 0x6b246b21, 0x6b146b18, 0x6b656b32, 0x6b436b75, 0x6b766b11, 0x6d606ca3, 0x5fbc6a82, 0x286c49b9
+.word 0xd7940000, 0xa044b647, 0x92a0957e, 0x948a935d, 0x94bd94ef, 0x949b948b, 0x94ec94ce, 0x94dc94e8
+.word 0x94ef94df, 0x950094fd, 0x94fc94fc, 0x950b9503, 0x950c950d, 0x950f950c, 0x95169514, 0x95169516
+.word 0x951a9517, 0x951c951c, 0x951d951c, 0x9520951f, 0x95219521, 0x95229521, 0x95249523, 0x95249524
+.word 0x95269525, 0x95269526, 0x95269526, 0x95279527, 0x95279527, 0x95289528, 0x95289528, 0x95289528
+.word 0x95289528, 0x95289528, 0x95289528, 0x95279528, 0x95279527, 0x95269527, 0x95269526, 0x95269526
+.word 0x95249525, 0x95249524, 0x95229523, 0x95219521, 0x95209521, 0x951d951f, 0x951c951c, 0x951a951c
+.word 0x95169517, 0x95169516, 0x950f9514, 0x950c950c, 0x950b950d, 0x94fc9503, 0x950094fc, 0x94ef94fd
+.word 0x94dc94df, 0x94ec94e8, 0x949b94ce, 0x94bd948b, 0x948a94ef, 0x92a0935d, 0xa044957e, 0xd794b647
+; wave 11
+.word 0x537c444e, 0x68465fff, 0x6d606c51, 0x6cae6d17, 0x6cb56c9a, 0x6c9c6cb9, 0x6cf96c9f, 0x6cb16d5b
+.word 0x61f8695c, 0x47625638, 0x2ac637fb, 0x1cc7219b, 0x1b5b1b3b, 0x1c081bd3, 0x1be21bfa, 0x1bf51be3
+.word 0x1c021c02, 0x1bfb1bfc, 0x1c071c01, 0x1c051c08, 0x1c071c05, 0x1c0b1c0a, 0x1c091c0a, 0x1c0c1c0a
+.word 0x1c0c1c0d, 0x1c0c1c0c, 0x1c0e1c0d, 0x1c0e1c0e, 0x1c0e1c0e, 0x1c0f1c0f, 0x1c0f1c0f, 0x1c101c0f
+.word 0x1c101c10, 0x1c101c10, 0x1c111c11, 0x1c111c11, 0x1c121c11, 0x1c121c12, 0x1c121c12, 0x1c131c13
+.word 0x1c141c13, 0x1c141c14, 0x1c151c14, 0x1c151c15, 0x1c161c15, 0x1c171c16, 0x1c171c17, 0x1c181c17
+.word 0x1c1a1c19, 0x1c1a1c1a, 0x1c1d1c1b, 0x1c1e1c1e, 0x1c1f1c1d, 0x1c241c21, 0x1c231c24, 0x1c291c24
+.word 0x1c301c2f, 0x1c2a1c2c, 0x1c491c36, 0x1c3c1c4f, 0x1c4f1c29, 0x1d071cc0, 0x17e81bf3, 0x03250fa5
+.word 0xe4ccf3f9, 0xd009d84c, 0xcaeacbfe, 0xcba3cb31, 0xcbb6cbc8, 0xcba9cba3, 0xcbc7cbbc, 0xcbc1cbc6
+.word 0xcbc8cbc2, 0xcbcecbce, 0xcbcdcbcd, 0xcbd2cbd0, 0xcbd3cbd3, 0xcbd4cbd3, 0xcbd7cbd6, 0xcbd6cbd6
+.word 0xcbd8cbd7, 0xcbd9cbd9, 0xcbd9cbd8, 0xcbdacbd9, 0xcbdacbda, 0xcbdacbda, 0xcbdbcbdb, 0xcbdbcbdb
+.word 0xcbdbcbdb, 0xcbdbcbdb, 0xcbdbcbdb, 0xcbdbcbdb, 0xcbdbcbdb, 0xcbdbcbdb, 0xcbdacbdb, 0xcbdacbda
+.word 0xcbdacbda, 0xcbd9cbd9, 0xcbd9cbd9, 0xcbd8cbd9, 0xcbd7cbd7, 0xcbd7cbd7, 0xcbd5cbd6, 0xcbd4cbd4
+.word 0xcbd3cbd4, 0xcbd0cbd1, 0xcbd0cbd0, 0xcbcbcbce, 0xcbcacbc9, 0xcbc8cbcb, 0xcbbdcbc2, 0xcbc2cbbd
+.word 0xcbb1cbc0, 0xcb9fcb9f, 0xcbbfcbb4, 0xcb0fcb87, 0xcc7acaf1, 0xda6ed149, 0xf70de7a4, 0x119805e2
+.word 0x1c4218ef, 0x1c961cf5, 0x1bfc1c25, 0x1c2f1c0d, 0x1c021c39, 0x1b431b88, 0x20671c5c, 0x352328a6
+; wave 12
+.word 0x6c096c06, 0x6c156c0f, 0x6c0d6c14, 0x6c176c09, 0x6c406c32, 0x6c046c28, 0x6cc76c27, 0x6c4b6d60
+.word 0x5b626709, 0x315f48d5, 0x041d1901, 0xee03f5a2, 0xebc4eb93, 0xecd8ec82, 0xeca1ecc5, 0xecbfeca2
+.word 0xecd6ecd5, 0xeccdecce, 0xecdfecd5, 0xecdfece1, 0xece1ecde, 0xece8ece6, 0xece7ece8, 0xecebece8
+.word 0xecedeced, 0xecedecec, 0xecf0ecef, 0xecf0ecf0, 0xecf1ecf0, 0xecf3ecf2, 0xecf3ecf3, 0xecf4ecf3
+.word 0xecf4ecf4, 0xecf5ecf4, 0xecf6ecf5, 0xecf6ecf6, 0xecf6ecf6, 0xecf7ecf7, 0xecf7ecf7, 0xecf7ecf7
+.word 0xecf8ecf8, 0xecf8ecf8, 0xecf8ecf8, 0xecf8ecf8, 0xecf9ecf8, 0xecf9ecf9, 0xecf9ecf9, 0xecf9ecf9
+.word 0xecf9ecf9, 0xecf9ecf9, 0xecf9ecf9, 0xecf9ecf9, 0xecfaecf9, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa
+.word 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa
+.word 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa
+.word 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecfaecfa, 0xecf9ecf9, 0xecf9ecf9, 0xecf9ecf9, 0xecf9ecf9
+.word 0xecf9ecf9, 0xecf9ecf9, 0xecf9ecf9, 0xecf9ecf9, 0xecf8ecf8, 0xecf8ecf8, 0xecf8ecf8, 0xecf8ecf8
+.word 0xecf7ecf8, 0xecf7ecf7, 0xecf7ecf7, 0xecf6ecf7, 0xecf6ecf6, 0xecf6ecf6, 0xecf5ecf5, 0xecf4ecf4
+.word 0xecf4ecf4, 0xecf3ecf3, 0xecf3ecf3, 0xecf1ecf2, 0xecf0ecf0, 0xecf0ecf0, 0xecedecef, 0xecedecec
+.word 0xecebeced, 0xece7ece8, 0xece8ece8, 0xece1ece6, 0xecdfecde, 0xecdfece1, 0xeccdecd5, 0xecd6ecce
+.word 0xecbfecd5, 0xeca1eca2, 0xecd8ecc5, 0xebc4ec82, 0xee03eb93, 0x041df5a2, 0x315f1901, 0x5b6248d5
+.word 0x6c4b6709, 0x6cc76d60, 0x6c046c27, 0x6c406c28, 0x6c176c32, 0x6c0d6c09, 0x6c156c14, 0x6c096c0f
+; wave 13
+.word 0x29c81545, 0x4d693cdf, 0x64755ab3, 0x6d606aa9, 0x68c56cb2, 0x588761e2, 0x41254d60, 0x2789346d
+.word 0x0d9d1a94, 0xf53000ef, 0xe40eeb47, 0xdee2dff7, 0xe30be030, 0xea9de6b1, 0xf234ee82, 0xf86ff58d
+.word 0xfc92fac6, 0xfedcfde5, 0x0032ff96, 0x017c00cb, 0x03690258, 0x062404b0, 0x095307b6, 0x0c4b0ae2
+.word 0x0e4c0d76, 0x0ec60ec0, 0x0d830e5c, 0x0ab10c45, 0x06d308d9, 0x029704b5, 0xfead008e, 0xfba1fd05
+.word 0xf9c0fa89, 0xf917f946, 0xf97ef92d, 0xfaa6f9ff, 0xfc35fb66, 0xfdd5fd07, 0xff44fe96, 0x005affdc
+.word 0x010500bd, 0x01490133, 0x01350149, 0x00e10112, 0x006600a7, 0xffd90021, 0xff4dff92, 0xfeccff0a
+.word 0xfe5efe93, 0xfe07fe30, 0xfdc5fde3, 0xfd96fdab, 0xfd75fd84, 0xfd5efd69, 0xfd4efd56, 0xfd3ffd46
+.word 0xfd2ffd37, 0xfd1cfd26, 0xfd04fd10, 0xfce8fcf7, 0xfcc8fcd9, 0xfca4fcb7, 0xfc7efc91, 0xfc55fc6a
+.word 0xfc2dfc41, 0xfc05fc18, 0xfbdefbf1, 0xfbbafbcc, 0xfb9afbaa, 0xfb7efb8b, 0xfb67fb72, 0xfb53fb5d
+.word 0xfb43fb4b, 0xfb34fb3c, 0xfb24fb2c, 0xfb0dfb19, 0xfaecfafe, 0xfabdfad7, 0xfa7bfa9f, 0xfa23fa52
+.word 0xf9b6f9ef, 0xf935f978, 0xf8a8f8ef, 0xf81bf861, 0xf7a0f7da, 0xf74cf770, 0xf739f739, 0xf77cf74e
+.word 0xf827f7c4, 0xf93cf8a5, 0xfaacf9eb, 0xfc4cfb7a, 0xfddbfd1b, 0xff03fe81, 0xff69ff53, 0xfec0ff3a
+.word 0xfcdffdf7, 0xf9d2fb7a, 0xf5e8f7f1, 0xf1acf3ca, 0xedcdefa6, 0xeafbec39, 0xe9b7ea22, 0xea31e9bd
+.word 0xec31eb08, 0xef28ed99, 0xf257f0c4, 0xf50ff3ca, 0xf6fcf61f, 0xf846f7ae, 0xf994f8dd, 0xfbe2fa8c
+.word 0xfffcfdae, 0x062b02d2, 0x0dd809eb, 0x14fe11a2, 0x1a0917c5, 0x1d911bf4, 0x1e421e92, 0x165f1bbf
+.word 0x031c0dff, 0xe9b1f6a5, 0xd202dd37, 0xc1dbc8b5, 0xbd30bde9, 0xc617bfe2, 0xdd27cfdd, 0x00c3edae
+; wave 14
+.word 0x19770000, 0x45b0312a, 0x62505630, 0x6d606a04, 0x679e6c82, 0x53825f17, 0x364a45a0, 0x169d265a
+.word 0xfa9007cf, 0xe681ef5b, 0xdc4ce028, 0xdb48dac3, 0xe0fedd7e, 0xea21e557, 0xf39beefc, 0xfb50f7c3
+.word 0x006dfe32, 0x03470214, 0x04eb042c, 0x068505a8, 0x08e90796, 0x0c4b0a7e, 0x103f0e3f, 0x13ee122e
+.word 0x166a1560, 0x170216fa, 0x1570167d, 0x11ef13e5, 0x0d210fa5, 0x07df0a81, 0x03040559, 0xff3b00f5
+.word 0xfce5fddf, 0xfc14fc4e, 0xfc93fc2f, 0xfe02fd33, 0xfff1fef1, 0x01f600f7, 0x03be02e6, 0x0517047b
+.word 0x05ec0592, 0x063f0625, 0x0627063f, 0x05bf05fb, 0x05260577, 0x047704d0, 0x03c8041f, 0x03280376
+.word 0x02a002e1, 0x02340267, 0x01e20207, 0x01a701c2, 0x017e0191, 0x0162016f, 0x014e0157, 0x013b0144
+.word 0x01270131, 0x010f011c, 0x00f20101, 0x00d000e2, 0x00a800bc, 0x007b0092, 0x004b0063, 0x00190032
+.word 0xffe70000, 0xffb5ffce, 0xff85ff9d, 0xff58ff6e, 0xff30ff44, 0xff0eff1e, 0xfef1feff, 0xfed9fee4
+.word 0xfec5fecf, 0xfeb2febc, 0xfe9efea9, 0xfe82fe91, 0xfe59fe6f, 0xfe1efe3e, 0xfdccfdf9, 0xfd60fd99
+.word 0xfcd8fd1f, 0xfc38fc8a, 0xfb89fbe1, 0xfadafb30, 0xfa41fa89, 0xf9d9fa05, 0xf9c1f9c1, 0xfa14f9db
+.word 0xfae9fa6e, 0xfc42fb85, 0xfe0afd1a, 0x000fff09, 0x01fe010f, 0x036d02cd, 0x03ec03d1, 0x031b03b2
+.word 0x00c50221, 0xfcfcff0b, 0xf821faa7, 0xf2dff57f, 0xee11f05b, 0xea90ec1b, 0xe8fee983, 0xe996e906
+.word 0xec12eaa0, 0xefc1edd2, 0xf3b5f1c1, 0xf717f582, 0xf97bf86a, 0xfb15fa58, 0xfcb9fbd4, 0xff93fdec
+.word 0x04b001ce, 0x0c65083d, 0x15df1104, 0x1f021aa9, 0x24b82282, 0x23b4253d, 0x197f1fd8, 0x057010a5
+.word 0xe963f831, 0xc9b6d9a6, 0xac7eba60, 0x9862a0e9, 0x92a0937e, 0x9db095fc, 0xba50a9d0, 0xe689ced6
+; wave 15
+.word 0x177b0000, 0x40b12d70, 0x5cf35098, 0x6b4465cf, 0x6c346d60, 0x60e767ee, 0x4ca6579f, 0x34054097
+.word 0x1b84277e, 0x06d61085, 0xf82dfeaf, 0xf012f354, 0xedb2ee43, 0xef5cee25, 0xf31ff117, 0xf756f541
+.word 0xfaf2f942, 0xfd8efc61, 0xff49fe83, 0x0089fff1, 0x01b6011d, 0x0311025c, 0x049a03d1, 0x06230563
+.word 0x076406d1, 0x082007d6, 0x08360840, 0x07b20805, 0x06c50745, 0x05b0063b, 0x04b9052d, 0x0414045a
+.word 0x03d903e9, 0x040603e4, 0x0481043c, 0x052404d0, 0x05c60578, 0x0646060c, 0x068e0672, 0x06940699
+.word 0x065c067f, 0x05f3062d, 0x056605b0, 0x04c80519, 0x04280478, 0x039103db, 0x030c034c, 0x029b02d1
+.word 0x0241026c, 0x01fc021c, 0x01ca01e1, 0x01a501b6, 0x018a0196, 0x0174017e, 0x0160016a, 0x014c0156
+.word 0x01340141, 0x01190127, 0x00f80109, 0x00d200e6, 0x00a800be, 0x007b0092, 0x004b0063, 0x00190032
+.word 0xffe70000, 0xffb5ffce, 0xff85ff9d, 0xff58ff6e, 0xff2eff42, 0xff08ff1a, 0xfee7fef7, 0xfeccfed9
+.word 0xfeb4febf, 0xfea0feaa, 0xfe8cfe96, 0xfe76fe82, 0xfe5bfe6a, 0xfe36fe4a, 0xfe04fe1f, 0xfdbffde4
+.word 0xfd65fd94, 0xfcf4fd2f, 0xfc6ffcb4, 0xfbd8fc25, 0xfb38fb88, 0xfa9afae7, 0xfa0dfa50, 0xf9a4f9d3
+.word 0xf96cf981, 0xf972f967, 0xf9baf98e, 0xfa3af9f4, 0xfadcfa88, 0xfb7ffb30, 0xfbfafbc4, 0xfc27fc1c
+.word 0xfbecfc17, 0xfb47fba6, 0xfa50fad3, 0xf93bf9c5, 0xf84ef8bb, 0xf7caf7fb, 0xf7e0f7c0, 0xf89cf82a
+.word 0xf9ddf92f, 0xfb66fa9d, 0xfceffc2f, 0xfe4afda4, 0xff77fee3, 0x00b7000f, 0x0272017d, 0x050e039f
+.word 0x08aa06be, 0x0ce10abf, 0x10a40ee9, 0x124e11db, 0x0fee11bd, 0x07d30cac, 0xf92a0151, 0xe47cef7b
+.word 0xcbfbd882, 0xb35abf69, 0x9f19a861, 0x93cc9812, 0x94bc92a0, 0xa30d9a31, 0xbf4faf68, 0xe885d290
+; wave 16
+.word 0x149e0000, 0x39472802, 0x542b4801, 0x65565de9, 0x6d1e6a6e, 0x6b496d60, 0x60f6670e, 0x50725951
+.word 0x3c7546b4, 0x27dc3211, 0x15231e23, 0x06050d0d, 0xfb690022, 0xf552f7d5, 0xf313f3c8, 0xf38df30d
+.word 0xf57df46a, 0xf7c1f6a4, 0xf985f8bc, 0xfa5cfa11, 0xfa3ffa69, 0xf976f9ea, 0xf876f8f5, 0xf7bbf809
+.word 0xf7adf79a, 0xf887f7fb, 0xfa51f94f, 0xfce5fb85, 0xfffcfe66, 0x033e019d, 0x065104d2, 0x08ec07b1
+.word 0x0ade09fc, 0x0c0f0b8f, 0x0c820c5f, 0x0c4c0c7a, 0x0b930bfe, 0x0a7e0b11, 0x093709de, 0x07e0088b
+.word 0x06970739, 0x056e05fe, 0x047004e9, 0x03a00402, 0x02fe034a, 0x028502bd, 0x022e0256, 0x01f3020e
+.word 0x01cb01dd, 0x01b201bd, 0x01a101a9, 0x0194019a, 0x0187018e, 0x01790180, 0x01680171, 0x0152015d
+.word 0x01370145, 0x01180128, 0x00f50107, 0x00ce00e2, 0x00a300b9, 0x0076008d, 0x0048005f, 0x00180030
+.word 0xffe80000, 0xffb8ffd0, 0xff8affa1, 0xff5dff73, 0xff32ff47, 0xff0bff1e, 0xfee8fef9, 0xfec9fed8
+.word 0xfeaefebb, 0xfe98fea3, 0xfe87fe8f, 0xfe79fe80, 0xfe6cfe72, 0xfe5ffe66, 0xfe4efe57, 0xfe35fe43
+.word 0xfe0dfe23, 0xfdd2fdf2, 0xfd7bfdaa, 0xfd02fd43, 0xfc60fcb6, 0xfb90fbfe, 0xfa92fb17, 0xf969fa02
+.word 0xf820f8c7, 0xf6c9f775, 0xf582f622, 0xf46df4ef, 0xf3b4f402, 0xf37ef386, 0xf3f1f3a1, 0xf522f471
+.word 0xf714f604, 0xf9aff84f, 0xfcc2fb2e, 0x0004fe63, 0x031b019a, 0x05af047b, 0x077906b1, 0x08530805
+.word 0x08450866, 0x078a07f7, 0x068a070b, 0x05c10616, 0x05a40597, 0x067b05ef, 0x083f0744, 0x0a83095c
+.word 0x0c730b96, 0x0ced0cf3, 0x0aae0c38, 0x0497082b, 0xf9fbffde, 0xeaddf2f3, 0xd824e1dd, 0xc38bcdef
+.word 0xaf8eb94c, 0x9f0aa6af, 0x94b798f2, 0x92e292a0, 0x9aaa9592, 0xabd5a217, 0xc6b9b7ff, 0xeb62d7fe
+; END BUILTIN

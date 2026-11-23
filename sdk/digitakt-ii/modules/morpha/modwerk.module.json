@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 3,
+  "id": "morpha",
+  "name": "Morpha",
+  "version": "0.1.0-experimental",
+  "machine": "digitakt-ii",
+  "category": "machines",
+  "exclusive": false,
+  "author": { "github": "Claptom-music", "credits": ["Claptom-music"] },
+  "maintainers": ["Claptom-music"],
+  "presentation": {
+    "label": "MORPHA",
+    "family": "Machine",
+    "summary": "A wavetable synth machine: it sweeps through a table of waves, from your own sample or a built-in one, bending each wave as it plays.",
+    "overview": "Morpha is a new machine in the track's machine list. It reads a wavetable, a row of single waves, and plays one of them as an oscillator at the note's pitch: POS picks the place in the table and Morpha morphs smoothly between the two waves around it, so turning POS or modulating it with an LFO changes the tone as it plays. The table is the track's sample cut into waves of 2,048 samples, the usual size of wavetable files, or, with no sample, a built-in table that runs from sine through triangle, saw, square and pulse to two vowel-like waves. WARP bends each wave four ways (BEND, SYNC, MIRR, FOLD) by AMT, DETN thickens it with two detuned copies, and SUB adds a sine an octave below. The Digitakt's own filter, amp envelope, LFOs and effects shape it like any machine. For chords, link tracks as voices in SETTINGS (VOICES), a feature of the Digitakt II base.",
+    "highlights": [
+      "Its own machine in the track's machine list, saved with the kit.",
+      "Plays your own wavetables, or a built-in table with no sample at all.",
+      "Four warp modes and three-oscillator unison.",
+      "Polyphonic through the base's linked voices: each note of a chord on its own track."
+    ],
+    "usage": [
+      "Choose Morpha with no sample and slowly sweep POS with an LFO for a tone that keeps changing.",
+      "Load a wavetable file as a sample, set WARP to SYNC and lock AMT on some trigs for movement.",
+      "Turn DETN up and link three tracks as voices for wide pads and chords."
+    ]
+  },
+  "access": {
+    "location": "The machine list of a track (FUNC + SRC), after the stock machines.",
+    "steps": [
+      "Select a track.",
+      "Hold FUNC and press SRC to open the machine list.",
+      "Scroll down past the stock machines to MORPHA and press YES.",
+      "Choose a wavetable sample with knob D on the SRC page, or none for the built-in table."
+    ],
+    "screenshots": []
+  },
+  "controls": [
+    { "name": "TUNE (knob A)", "default": null, "doc": "The pitch, as SAMPLE's TUNE. A note at the track's default pitch plays middle C.", "labels": null },
+    { "name": "WARP (knob B)", "default": 3, "doc": "How the wave is bent: BEND pushes it towards its ends, SYNC restarts it up to four times a cycle, MIRR plays it forward then back, FOLD folds its level back on itself.", "labels": ["FOLD", "MIRR", "SYNC", "BEND"] },
+    { "name": "AMT (knob C)", "default": 0, "doc": "How much WARP bends the wave; at 0 the wave plays as it is.", "labels": null },
+    { "name": "SAMP (knob D)", "default": null, "doc": "The wavetable: a sample cut into waves of 2,048 samples (a shorter sample is one wave), or none for the built-in table.", "labels": null },
+    { "name": "POS (knob E)", "default": 0, "doc": "Which wave of the table plays, morphing smoothly between neighbouring waves.", "labels": null },
+    { "name": "DETN (knob F)", "default": null, "doc": "Unison: one oscillator at 0; turned up, two more detuned up and down by up to half a semitone.", "labels": null },
+    { "name": "SUB (knob G)", "default": 0, "doc": "The level of a sine one octave below.", "labels": null }
+  ],
+  "compatibility": {
+    "releases": ["1.17"],
+    "requires": [],
+    "conflicts": [],
+    "limitations": [
+      "Needs the Digitakt II base with added machines; polyphony needs the base's linked voices.",
+      "Waves are read without band-limiting: very bright waves played high can alias."
+    ]
+  },
+  "platform": { "kind": "elemod", "core": "1.1", "build": "build.json", "events": [], "claims": ["machine:9"] },
+  "resources": {
+    "memoryBytes": null,
+    "fastBytes": null,
+    "load": { "display": "Not measured yet", "method": "unmeasured", "conditions": "Measure with DETN and SUB up on every voice, in the emulator and on a unit." }
+  },
+  "evidence": { "tier": "none", "moduleVersion": "0.1.0-experimental", "sourceSha256": null, "reports": [], "hardware": null, "verifiedBy": null },
+  "tests": { "report": "TESTING.md", "summary": "Not tested on a unit yet." },
+  "license": { "spdx": "GPL-3.0-or-later", "file": "LICENSE", "declaration": "Original work by the author." },
+  "media": [
+    { "path": "media/thumbnail.svg", "kind": "thumbnail", "caption": "Morpha thumbnail", "alt": "A stack of single waves morphing from sine to square, one drawn bold", "credit": "Claptom-music", "license": "GPL-3.0-or-later", "source": "Original artwork in the shared signal-art style." }
+  ]
+}
