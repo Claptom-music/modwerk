@@ -27,6 +27,14 @@ Digitakt II OS 1.17 with the development base and linked voices, Morpha on track
 | The second SRC page, FUNC held | The view fills up, then disappears when FUNC is released. |
 | TRIG page NOTE turned while a note plays | Morpha's pitch does not follow, with or without a sample. |
 
+## Unit, 23 November 2026, test build `27dfadf8` (reported by the author)
+
+| Check | Reported |
+| --- | --- |
+| Chords with VOICES 3-4, knobs turned while playing | Pass: every chord note keeps the lead's settings. |
+| FOLD, POS (built-in table and a sample), AMT | Pass, as on `e6ffc45b`. |
+| TRIG page NOTE | Not a fault: the earlier report was made in keyboard mode, where the keys set the note. |
+
 ## Unit, 23 November 2026, test build `e6ffc45b` (reported by the author)
 
 | Check | Reported |
