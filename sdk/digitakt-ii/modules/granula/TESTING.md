@@ -20,6 +20,8 @@ Coupled ColdFire and sound-chip runs (interpreter, from a ready point saved with
 | POS turned to its end, SPRD up (knobs E and G, small turns) | First build: the note's first block still held the previous sample's length (368 samples against 48,000), and a forward grain placed at the sample's very end played nothing; each cloud lasted a quarter second, as the guide ran from POS to the end. Fixed: the first grain waits one block, a forward grain starts early enough to fit, and the guide loops, so a cloud lasts until the amp envelope ends it. After the fix: grains start between words 21,320 and 23,871 of 24,000, scattered by SPRD; both notes play at full level (peak 0.064) and fade with the amp envelope over about 5 s. |
 | Default knobs with the looping guide | The cloud fades with the amp envelope (peak 0.058 down to 0.0002 over 5 s) instead of stopping at the sample's end. No grain reversed (a trace of the negation found none), so the play mode reads right every block. |
 
+| Cost (entry and exit of the player traced over 8,000 calls, SIZE and DENS full) | An idle voice: 360 emulator instructions per block. A sounding voice with four long grains: up to 16,868; up to 20,903 in the block where a new note starts while the last note's grains finish. A stock SAMPLE voice playing takes about 3,500 (MACHINES.md). With the looping guide every voice that had played stayed at full cost, so the cloud now ends after the sample's length: the second run's audio falls silent about 1 s after each note's cloud began (the test tone is 1 s), where the looping build kept fading for 5 s. |
+
 ## Still to test
 
 - SIZE, DENS, POS and SPRD across their ranges; MODE REV and RAND (reversed grains).
