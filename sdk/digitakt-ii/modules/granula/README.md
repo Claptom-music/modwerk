@@ -44,7 +44,7 @@ A cloud lasts as long as the sample would at the note's pitch. In RAND it lasts 
 - Machine type 8, claimed as `machine:8`: kits save it, and a kit with Granula loads as SAMPLE where Granula is not installed.
 - Granula's sound-chip memory is L2 `0x200d0000`-`0x200f0000` (board claim `dsp-region digitakt-ii/granula-l2`).
 - B's two loop positions both play RAND.
-- Up to four grains sound at once per voice. With a long SIZE and a high DENS, a new grain takes the place of the oldest.
+- Up to four grains sound at once per voice. With a long SIZE, DENS starts no more grains than that: a 1 s grain allows one start every quarter second.
 
 ## How it works
 

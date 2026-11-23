@@ -132,10 +132,12 @@ granula_player:
   I0 = R0
   R0 = DM(M3, I0)
   DM(V_STEP) = R0
-  R1 = PRECB
-  R0 = R9 * R1 (SSI)
+  R1 = -2
+  R0 = R9 AND R1                ; a note plays on a pair of voices: both read the first one's knobs (emulator: only
+  R1 = PRECB                    ; the pair's first voice record had a turned SIZE)
+  R0 = R0 * R1 (SSI)
   R1 = PREC0
-  R10 = R0 + R1                 ; R10: the voice's parameter record (byte address)
+  R10 = R0 + R1                 ; R10: the pair's parameter record (byte address)
 
 ; No sample on this voice: the stock player writes its silence.
   I1 = R4
@@ -424,6 +426,10 @@ timing:
   F0 = FLOAT R0
   F0 = F0 * F1
   R5 = FIX F0
+  F0 = 0.25                     ; at most GRAINS grains overlap: a long grain sets a longer interval
+  F0 = F4 * F0
+  R0 = FIX F0
+  R5 = MAX(R5, R0)
   R1 = 32
   R5 = MAX(R5, R1)
   RTS
