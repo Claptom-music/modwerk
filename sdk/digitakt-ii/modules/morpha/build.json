@@ -4,7 +4,10 @@
   "defsym": {},
   "cflags": [],
   "weak": [],
-  "subscribe": [],
+  "subscribe": [
+    { "event": "ev_draw", "fn": "morpha_draw", "order": 50 },
+    { "event": "ev_tick", "fn": "morpha_tick", "order": 50 }
+  ],
   "contribute": [
     { "to": "core_machines", "order": 50, "data": "00000000", "relocs": [[0, "abs32", "sym:morpha_machine", 0]] }
   ],

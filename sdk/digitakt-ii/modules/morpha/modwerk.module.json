@@ -53,7 +53,7 @@
       "Waves are read without band-limiting: very bright waves played high can alias."
     ]
   },
-  "platform": { "kind": "elemod", "core": "1.1", "build": "build.json", "events": [], "claims": ["machine:9"] },
+  "platform": { "kind": "elemod", "core": "1.1", "build": "build.json", "events": ["ev_draw", "ev_tick"], "claims": ["machine:9"] },
   "resources": {
     "memoryBytes": null,
     "fastBytes": null,

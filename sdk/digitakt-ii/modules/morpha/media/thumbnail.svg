@@ -1,1 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 192"><rect width="320" height="192" fill="#1c1c22"/><path d="M28 97h264" stroke="#83c7bc" stroke-width="2.3" stroke-dasharray="6 6" fill="none"/><text x="24" y="40" fill="#83c7bc" font-family="monospace" font-size="12">REPLACE THIS THUMBNAIL</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 192" width="320" height="192" role="img" aria-label="A stack of single waves morphing from sine to pulse, one drawn bold">
+<rect width="320" height="192" fill="#0d1014"/>
+<g stroke="#1e262e" stroke-width="1"><path d="M0 0V192"/><path d="M40 0V192"/><path d="M80 0V192"/><path d="M120 0V192"/><path d="M160 0V192"/><path d="M200 0V192"/><path d="M240 0V192"/><path d="M280 0V192"/><path d="M320 0V192"/><path d="M0 0H320"/><path d="M0 32H320"/><path d="M0 64H320"/><path d="M0 96H320"/><path d="M0 128H320"/><path d="M0 160H320"/><path d="M0 192H320"/></g>
+<g fill="none" stroke="#3e4a55" stroke-width="1.5">
+<path d="M120 70v-18h22v36h138v-18"/>
+<path d="M102 86v-18h70v36h70v-18"/>
+<path d="M84 102l70-18v36l70-18"/>
+<path d="M48 134q35-36 70 0t70 0"/>
+<path d="M30 150q35-36 70 0t70 0"/>
+</g>
+<path d="M66 118l35-18 70 36 35-18" fill="none" stroke="#e8a33d" stroke-width="2.5"/>
+<path d="M30 168l90-90" fill="none" stroke="#6b7a89" stroke-width="1" stroke-dasharray="3 4"/>
+<text x="20" y="40" fill="#9aa7b4" font-family="monospace" font-size="12">MORPHA</text>
+<text x="20" y="182" fill="#6b7a89" font-family="monospace" font-size="11">wavetable  POS / WARP</text>
+</svg>

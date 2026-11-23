@@ -30,6 +30,7 @@
 
 .equ RECB, 0x1d8                ; bytes per voice record
 .equ R_ADDR, 0                  ; record word: the sample's address, 0 for no sample
+.equ R_RATE, 0x61               ; record word: the sample's rate (48,000)
 .equ R_SAMPLES, 0x62            ; record word: the sample's length in samples
 .equ R_STEPF, 0x6a              ; record word: the step's fraction
 .equ R_STEPW, 0x6b              ; record word: the step's whole part, negative when the play mode reverses
@@ -45,6 +46,7 @@
 .equ VARS, 0x200f3000
 .equ V, VARS / 4
 .equ V_SLOT, V + 0              ; the voice's output slot
+.equ V_REC, V + 1               ; its record
 .equ V_MODE, V + 2              ; WARP: 0 BEND, 1 SYNC, 2 MIRR, 3 FOLD
 .equ V_INC, V + 3               ; the centre oscillator's phase step (cycles a sample)
 .equ V_INC1, V + 4              ; the upper detuned one's
@@ -67,7 +69,26 @@
 .equ V_1MA, V + 21              ; 1 - AMT (BEND)
 .equ V_SYNC, V + 22             ; 1 + 3 AMT (SYNC)
 .equ V_FOLDK, V + 23            ; (1 + 4 AMT) / 32768 (FOLD)
+.equ V_TRACK, V + 24            ; the voice's track
+.equ V_VWHICH, V + 25           ; the view's wave being sent: -1 the one that sounds, else a wave of the table
+.equ V_VFILL, V + 26            ; words of it written, 0-24
+.equ V_VNEXT, V + 27            ; the next of twelve table waves to send, 0-11
+.equ V_VP, V + 28               ; the next point, 0-95
+.equ V_VJ, V + 29               ; the point within the word, 0-3
+.equ V_VSERIAL, V + 30          ; counts the view's posts
 .equ V_SAVE, V + 32             ; 24 saved registers
+
+; The view (the base's machine view, mk2/machines.h): 32 words about the view track's voice, which the base sends back
+; to the ColdFire with every transfer. Word 0 the magic, 1 the track, 2 POS (0-65535), 3 WARP | AMT (0-255) << 8 |
+; the table's waves << 16, 4 which wave words 8-31 show (-1 the one that sounds, warped and morphed; else that wave of
+; the table, plain), 5 how many of words 8-31 are written for it (24 when whole), 6 a serial, 7 which of the twelve
+; table waves sent (0-11, the last one sent), 8-31 the wave: 96 points, four signed bytes a word, the first in the low
+; byte, each the wave's level / 256. A block writes one word, so a wave takes 24 blocks (16 ms) and then stays 64
+; more; the player sends the sounding wave and a table wave in turn, twelve table waves n (waves - 1) / 11.
+.equ VIEW_TRACK, 0x200c2c64 / 4
+.equ VIEW, 0x200c2c68 / 4
+.equ VIEWB, 0x200c2c68
+.equ VIEW_MAGIC, 0x4d525031     ; "MRP1"
 
 .equ VSTATE, 0x200f3100         ; per voice 8 words: the three oscillators' phases, the sub's (floats, 0-1)
 .equ VSTATEB, 32
@@ -108,6 +129,9 @@ morpha_player:
   DM(V_SLOT) = R8
   R0 = 32
   R9 = R0 - R14                 ; R9: the voice, 0-31
+  R1 = -1
+  R0 = LSHIFT R9 BY R1
+  DM(V_TRACK) = R0
   R0 = 1
   R0 = R9 AND R0
   IF NE JUMP copy_pair          ; the second voice of the track plays what the first just played
@@ -123,13 +147,7 @@ morpha_player:
   R0 = R0 + R1
   I3 = R0                       ; I3: its parameter record
   I1 = R4                       ; I1: its record
-
-; No note: silence.
-  R1 = R_PLAYING
-  M1 = R1
-  R0 = DM(M1, I1)
-  R0 = PASS R0
-  IF EQ JUMP silence
+  DM(V_REC) = R4
 
 ; The knobs, each held in 0-1.
   R1 = P_AMT
@@ -183,6 +201,30 @@ morpha_player:
   F4 = 0.000000059604645        ; 2^-24
   F1 = F1 * F4
   F0 = F0 + F1
+; The stock setup multiplies the step by the sample's rate / 48,000 (record word 0x61, at 0x1c4c2e); a wavetable's
+; waves have a length, not a rate, and with no sample the word is left over (emulator: 5 cents sharp). Divide it out.
+  R1 = R_RATE
+  M1 = R1
+  R2 = DM(M1, I1)
+  R3 = 8000
+  COMP(R2, R3)
+  IF LT JUMP rate_done
+  R3 = 192000
+  COMP(R2, R3)
+  IF GT JUMP rate_done
+  F2 = FLOAT R2
+  F3 = RECIPS F2                ; refined twice: x (2 - a x)
+  F4 = F2 * F3
+  F5 = 2.0
+  F4 = F5 - F4
+  F3 = F3 * F4
+  F4 = F2 * F3
+  F4 = F5 - F4
+  F3 = F3 * F4
+  F4 = 48000.0
+  F3 = F3 * F4
+  F0 = F0 * F3
+rate_done:
   F1 = 0.0218021333             ; cycles a sample at a step of one: 4 x 261.6256 / 48000 (the step counts quarter
   F9 = F0 * F1                  ; samples; a float must be written here, an .equ name loads its value as an integer)
   DM(V_INC) = F9
@@ -316,6 +358,14 @@ table_set:
   R10 = 16                      ; read16's constants (R9 is F9, the step)
 
   R11 = -16
+  CALL post_view                ; the screen shows the wave with or without a note
+  R0 = DM(V_REC)
+  I1 = R0
+  R1 = R_PLAYING
+  M1 = R1
+  R0 = DM(M1, I1)
+  R0 = PASS R0
+  IF EQ JUMP silence            ; no note: silence
   R15 = 32
 sample_loop:
   F8 = DM(M3, I2)
@@ -629,6 +679,153 @@ negate_done:
   R3 = PASS R4
   R2 = PASS R5
   RTS
+
+; post_view: one word of the view, when this voice's track is the view track. Called before the block's samples, with
+; I3, I4, R10 and R11 set for read16 and osc. Changes R0-R6, F7, F8, F9, F12, R13, R15, I1, M1, M4.
+post_view:
+  R0 = DM(VIEW_TRACK)
+  R1 = DM(V_TRACK)
+  COMP(R0, R1)
+  IF NE RTS
+  R0 = VIEW_MAGIC
+  DM(VIEW + 0) = R0
+  DM(VIEW + 1) = R1
+  F0 = DM(V_POS)
+  F1 = 65535.0
+  F0 = F0 * F1
+  R0 = FIX F0
+  DM(VIEW + 2) = R0
+  F0 = DM(V_AMT)
+  F1 = 255.0
+  F0 = F0 * F1
+  R0 = FIX F0
+  R1 = 8
+  R0 = LSHIFT R0 BY R1
+  R1 = DM(V_MODE)
+  R0 = R0 OR R1
+  R1 = DM(V_FRAMES)
+  R2 = 16
+  R1 = LSHIFT R1 BY R2
+  R0 = R0 OR R1
+  DM(VIEW + 3) = R0
+  R0 = DM(V_VSERIAL)
+  R0 = R0 + 1
+  DM(V_VSERIAL) = R0
+  DM(VIEW + 6) = R0
+; A whole wave stays posted for 64 blocks (43 ms), so the screen, which reads it about 30 times a second, sees it
+; whole; then the next, the sounding wave and a table wave in turn.
+  R13 = DM(V_VFILL)
+  R0 = 24
+  COMP(R13, R0)
+  IF LT JUMP view_fill
+  R0 = 88
+  COMP(R13, R0)
+  IF GE JUMP view_next
+  R13 = R13 + 1
+  DM(V_VFILL) = R13
+  RTS
+view_next:
+  R13 = 0
+  DM(V_VFILL) = R13
+  DM(VIEW + 5) = R13
+  R0 = DM(V_VWHICH)
+  R0 = PASS R0
+  IF GE JUMP view_sounding
+  R0 = DM(V_VNEXT)              ; table wave n of twelve: n (waves - 1) / 11
+  R1 = DM(V_FRAMES)
+  R1 = R1 - 1
+  R2 = R0 * R1 (SSI)
+  F2 = FLOAT R2
+  F1 = 0.0909090909
+  F2 = F2 * F1
+  R2 = FIX F2
+  DM(VIEW + 7) = R0             ; which of the twelve
+  R0 = R0 + 1
+  R1 = 12
+  COMP(R0, R1)
+  IF GE R0 = R0 - R1
+  DM(V_VNEXT) = R0
+  JUMP view_which
+view_sounding:
+  R2 = -1
+view_which:
+  DM(V_VWHICH) = R2
+  DM(VIEW + 4) = R2
+view_fill:
+; Four points into word 8 + fill.
+  R0 = R13 + R13
+  R0 = R0 + R0
+  DM(V_VP) = R0
+  R0 = 0
+  DM(V_VJ) = R0
+  R15 = 0
+view_point_loop:
+  R0 = DM(V_VP)
+  F0 = FLOAT R0
+  F1 = 0.0104166667             ; 1 / 96
+  F8 = F0 * F1
+  CALL view_point
+  R1 = DM(V_VJ)
+  R2 = 3
+  R1 = LSHIFT R1 BY R2
+  R0 = LSHIFT R0 BY R1
+  R15 = R15 OR R0
+  R0 = DM(V_VP)
+  R0 = R0 + 1
+  DM(V_VP) = R0
+  R0 = DM(V_VJ)
+  R0 = R0 + 1
+  DM(V_VJ) = R0
+  R1 = 4
+  COMP(R0, R1)
+  IF LT JUMP view_point_loop
+  R0 = VIEWB + 32
+  I1 = R0
+  M1 = R13
+  DM(M1, I1) = R15
+  R13 = R13 + 1
+  DM(V_VFILL) = R13
+  DM(VIEW + 5) = R13
+  RTS
+
+; view_point: R0 = the view's wave at phase F8 as a byte (the level / 256, -127 to 127). Changes R0-R6, F7, F9, F12, M4.
+view_point:
+  R0 = DM(V_VWHICH)
+  R0 = PASS R0
+  IF GE JUMP view_plain
+  F9 = 0.0
+  CALL osc                      ; the sounding wave: warped and morphed, the phase left where it is
+  JUMP view_scale
+view_plain:
+  R1 = DM(V_FRAMES)
+  R1 = R1 - 1
+  R0 = MIN(R0, R1)              ; the table may have changed since the wave was chosen
+  R1 = DM(V_FLEN)
+  R3 = R0 * R1 (SSI)
+  F0 = DM(V_FLENF)
+  F2 = F8 * F0
+  R0 = FIX F2
+  R2 = 0
+  R0 = MAX(R0, R2)
+  R2 = R1 - 1
+  R0 = MIN(R0, R2)
+  R4 = R0 + R3
+  CALL read16
+  F12 = FLOAT R5
+view_scale:
+  F0 = 0.00390625               ; 1 / 256
+  F12 = F12 * F0
+  R0 = FIX F12
+  R1 = 127
+  R0 = MIN(R0, R1)
+  R1 = -127
+  R0 = MAX(R0, R1)
+  R1 = 255
+  R0 = R0 AND R1
+  RTS
+
+.data VARS                      ; loaded as zeros: the view starts with table wave 0
+.space 256
 
 .data VSTATE
 .space 1024
