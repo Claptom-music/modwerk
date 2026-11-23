@@ -63,6 +63,6 @@
   "tests": { "report": "TESTING.md", "summary": "Not tested on a unit yet." },
   "license": { "spdx": "GPL-3.0-or-later", "file": "LICENSE", "declaration": "Original work by the author." },
   "media": [
-    { "path": "media/thumbnail.svg", "kind": "thumbnail", "caption": "Granula thumbnail", "alt": "Placeholder thumbnail for Granula", "credit": "Claptom-music", "license": "GPL-3.0-or-later", "source": "Original placeholder from the Modwerk SDK template; replace with your own artwork." }
+    { "path": "media/thumbnail.svg", "kind": "thumbnail", "caption": "Granula thumbnail", "alt": "A sample's waveform with short windowed grains cut from it, some forward, one reversed", "credit": "Claptom-music", "license": "GPL-3.0-or-later", "source": "Original artwork in the shared signal-art style." }
   ]
 }

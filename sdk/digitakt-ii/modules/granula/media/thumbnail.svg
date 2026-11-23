@@ -1,1 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 192"><rect width="320" height="192" fill="#1c1c22"/><path d="M28 97h264" stroke="#83c7bc" stroke-width="2.3" stroke-dasharray="6 6" fill="none"/><text x="24" y="40" fill="#83c7bc" font-family="monospace" font-size="12">REPLACE THIS THUMBNAIL</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 192" width="320" height="192" role="img" aria-label="A sample's waveform with short windowed grains cut from it, some forward, one reversed">
+<rect width="320" height="192" fill="#0d1014"/>
+<g stroke="#1e262e" stroke-width="1"><path d="M0 0V192"/><path d="M40 0V192"/><path d="M80 0V192"/><path d="M120 0V192"/><path d="M160 0V192"/><path d="M200 0V192"/><path d="M240 0V192"/><path d="M280 0V192"/><path d="M320 0V192"/><path d="M0 0H320"/><path d="M0 32H320"/><path d="M0 64H320"/><path d="M0 96H320"/><path d="M0 128H320"/><path d="M0 160H320"/><path d="M0 192H320"/></g>
+<path d="M20 70q6-14 12 0t12 0 12-10 12 0 12 8 12 0 12-16 12 0 12 6 12 0 12-12 12 0 12 10 12 0 12-14 12 0 12 4 12 0 12-8 12 0 12 12 12 0 12-6 12 0" fill="none" stroke="#3e4a55" stroke-width="1.5"/>
+<g fill="none" stroke="#83c7bc" stroke-width="2">
+<path d="M40 140q20-44 40 0"/><path d="M72 140q20-44 40 0"/><path d="M104 140q20-44 40 0"/><path d="M168 140q20-44 40 0"/><path d="M200 140q20-44 40 0"/><path d="M232 140q20-44 40 0"/>
+</g>
+<path d="M136 140q20-44 40 0" fill="none" stroke="#e8a33d" stroke-width="2"/>
+<g fill="none" stroke="#6b7a89" stroke-width="1.5"><path d="M52 150h16m-5-4 5 4-5 4"/><path d="M180 150h16m-5-4 5 4-5 4"/></g>
+<path d="M164 150h-16m5-4-5 4 5 4" fill="none" stroke="#e8a33d" stroke-width="1.5"/>
+<text x="20" y="40" fill="#9aa7b4" font-family="monospace" font-size="12">GRANULA</text>
+<text x="20" y="176" fill="#6b7a89" font-family="monospace" font-size="11">grains FWD / REV / RAND</text>
+</svg>
