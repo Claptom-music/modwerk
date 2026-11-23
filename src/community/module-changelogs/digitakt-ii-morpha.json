@@ -6,6 +6,7 @@
       "First release for Digitakt II OS 1.17: Morpha, a wavetable synth in the track's machine list.",
       "POS sweeps through a table of waves: your own sample cut into 2,048-sample waves, or a built-in table with no sample.",
       "WARP bends the wave four ways (BEND, SYNC, MIRR, FOLD) by AMT; DETN adds detuned unison and MIX blends in a sine an octave down.",
+      "Every knob glides smoothly, and the sub sine never drops below C1.",
       "Chords through the base's linked voices (SETTINGS > VOICES)."
     ]
   }

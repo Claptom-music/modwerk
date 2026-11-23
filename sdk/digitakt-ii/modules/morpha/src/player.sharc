@@ -36,12 +36,11 @@
 .equ R_STEPW, 0x6b              ; record word: the step's whole part, negative when the play mode reverses
 .equ R_PLAYING, 0x6e            ; record word: nonzero while a note plays
 .equ R_LOOPING, 0x6f            ; record word: 1 in the loop play modes
+.equ KNOBS, 0x200c2d34          ; the base's wire: each track's knobs C and E (DT2_BASE_SHARC.trackKnobs, byte address)
 .equ PREC0, 0x250738            ; voice 0's parameter record (byte address); 0xdc bytes per voice
 .equ PRECB, 0xdc
-.equ P_POS, 0x25                ; knob E (SAMPLE's START) as 0-1
-.equ P_MIX, 0x26               ; knob F (SAMPLE's LENGTH) as 0-1, full on a new track
+.equ P_MIX, 0x26                ; knob F (SAMPLE's LENGTH) as 0-1, full on a new track
 .equ P_DETN, 0x27               ; knob G (SAMPLE's LOOP position) as 0-1, 0 on a new track
-.equ P_AMT, 0x28                ; knob C (SAMPLE's crossfade) as 0-1
 
 .equ VARS, 0x200f3000
 .equ V, VARS / 4
@@ -76,6 +75,8 @@
 .equ V_VP, V + 28               ; the next point, 0-95
 .equ V_VJ, V + 29               ; the point within the word, 0-3
 .equ V_VSERIAL, V + 30          ; counts the view's posts
+.equ V_SUBINC, V + 31           ; the sub's phase step (an octave down, not below C1)
+.equ V_VCOUNT, V + 56           ; counts the view's waves: three sounding waves to one table wave
 .equ V_SAVE, V + 32             ; 24 saved registers
 
 ; The view (the base's machine view, mk2/machines.h): 32 words about the view track's voice, which the base sends back
@@ -84,7 +85,7 @@
 ; the table, plain), 5 how many of words 8-31 are written for it (24 when whole), 6 a serial, 7 which of the twelve
 ; table waves sent (0-11, the last one sent), 8-31 the wave: 96 points, four signed bytes a word, the first in the low
 ; byte, each the wave's level / 256. A block writes one word, so a wave takes 24 blocks (16 ms) and then stays 64
-; more; the player sends the sounding wave and a table wave in turn, twelve table waves n (waves - 1) / 11.
+; more; the player sends the sounding wave three times, then a table wave, twelve table waves n (waves - 1) / 11.
 .equ VIEW_TRACK, 0x200c2c64 / 4
 .equ VIEW, 0x200c2c68 / 4
 .equ VIEWB, 0x200c2c68
@@ -141,35 +142,56 @@ morpha_player:
   R1 = VSTATE
   R0 = R0 + R1
   I2 = R0                       ; I2: this voice's state
+  I1 = R4                       ; I1: its record
+  DM(V_REC) = R4
+
+; The knobs, each held in 0-1 and glided (state words 4-7) so a knob's steps become smooth sweeps. C and E at full
+; resolution from the base's wire (a word a track: C | E << 16, each value << 8; the parameter record gets C as 0 or
+; 1 only), F and G from the voice's parameter record.
+  R0 = DM(V_TRACK)
+  R1 = 4
+  R0 = R0 * R1 (SSI)
+  R1 = KNOBS
+  R0 = R0 + R1
+  I0 = R0                       ; I0: the track's knob word (I0 is the output slot only from the block on)
+  R5 = 0xffff
+  R6 = -16
+  R7 = DM(M3, I0)               ; C | E << 16 (in R7: glide changes F2, which is R2)
+  R3 = R7 AND R5
+  F0 = FLOAT R3
+  F1 = 0.0000307578             ; 1 / 0x7f00 (C: 0-127)
+  F0 = F0 * F1
+  CALL unit
+  R1 = 5
+  CALL glide
+  DM(V_AMT) = F0
+  R3 = LSHIFT R7 BY R6
+  F0 = FLOAT R3
+  F1 = 0.0000325521             ; 1 / 0x7800 (E: START, 0-120)
+  F0 = F0 * F1
+  CALL unit
+  R1 = 4
+  CALL glide
+  DM(V_POS) = F0
   R1 = PRECB
   R0 = R9 * R1 (SSI)
   R1 = PREC0
   R0 = R0 + R1
-  I3 = R0                       ; I3: its parameter record
-  I1 = R4                       ; I1: its record
-  DM(V_REC) = R4
-
-; The knobs, each held in 0-1.
-  R1 = P_AMT
-  M1 = R1
-  F0 = DM(M1, I3)
-  CALL unit
-  DM(V_AMT) = F0
-  R1 = P_DETN
-  M1 = R1
-  F0 = DM(M1, I3)
-  CALL unit
-  DM(V_DETN) = F0
+  I3 = R0                       ; I3: the voice's parameter record
   R1 = P_MIX
   M1 = R1
   F0 = DM(M1, I3)
   CALL unit
+  R1 = 6
+  CALL glide
   DM(V_MIX) = F0
-  R1 = P_POS
+  R1 = P_DETN
   M1 = R1
   F0 = DM(M1, I3)
   CALL unit
-  DM(V_POS) = F0
+  R1 = 7
+  CALL glide
+  DM(V_DETN) = F0
 
 ; WARP from the play mode: the step's sign (REV) and the loop flag.
   R1 = R_STEPW
@@ -229,6 +251,19 @@ rate_done:
   F1 = 0.0218021333             ; cycles a sample at a step of one: 4 x 261.6256 / 48000 (the step counts quarter
   F9 = F0 * F1                  ; samples; a float must be written here, an .equ name loads its value as an integer)
   DM(V_INC) = F9
+; The sub: an octave down, but never below C1 (32.7 Hz): lower notes take it up an octave at a time instead.
+  F1 = 0.5
+  F1 = F9 * F1
+  F2 = 0.000681317              ; 32.7032 / 48000
+  R0 = 8
+sub_floor:
+  COMP(F1, F2)
+  IF GE JUMP sub_set
+  F1 = F1 + F1
+  R0 = R0 - 1
+  IF NE JUMP sub_floor
+sub_set:
+  DM(V_SUBINC) = F1
 
 ; The table: the sample, or the built-in one.
   R0 = DM(M3, I1)
@@ -414,9 +449,7 @@ sub_part:
   R1 = 3
   M1 = R1
   F8 = DM(M1, I2)
-  F9 = DM(V_INC)
-  F1 = 0.5
-  F9 = F9 * F1
+  F9 = DM(V_SUBINC)
   CALL subosc
   DM(M1, I2) = F8
   F0 = DM(V_SGAIN)
@@ -485,6 +518,18 @@ unit:
   F0 = MAX(F0, F1)
   F1 = 1.0
   F0 = MIN(F0, F1)
+  RTS
+
+; glide: F0 = the voice's state word R1 moved a sixteenth of the way towards F0 a block (time constant about 10 ms),
+; stored and returned. Needs I2 = the voice's state. Changes F1, F2, M1.
+glide:
+  M1 = R1
+  F1 = DM(M1, I2)
+  F0 = F0 - F1
+  F2 = 0.0625
+  F0 = F0 * F2
+  F0 = F0 + F1
+  DM(M1, I2) = F0
   RTS
 
 ; osc: one oscillator's sample. F8 = its phase (advanced in place), F9 = its step; returns F12, the wave's value in
@@ -724,7 +769,7 @@ post_view:
   DM(V_VSERIAL) = R0
   DM(VIEW + 6) = R0
 ; A whole wave stays posted for 64 blocks (43 ms), so the screen, which reads it about 30 times a second, sees it
-; whole; then the next, the sounding wave and a table wave in turn.
+; whole; then the next: three times the sounding wave, then one table wave.
   R13 = DM(V_VFILL)
   R0 = 24
   COMP(R13, R0)
@@ -739,9 +784,13 @@ view_next:
   R13 = 0
   DM(V_VFILL) = R13
   DM(VIEW + 5) = R13
-  R0 = DM(V_VWHICH)
+  R0 = DM(V_VCOUNT)             ; three sounding waves, then a table wave: the sounding one moves 20 times a second
+  R0 = R0 + 1
+  R1 = 3
+  R0 = R0 AND R1
+  DM(V_VCOUNT) = R0
   R0 = PASS R0
-  IF GE JUMP view_sounding
+  IF NE JUMP view_sounding
   R0 = DM(V_VNEXT)              ; table wave n of twelve: n (waves - 1) / 11
   R1 = DM(V_FRAMES)
   R1 = R1 - 1

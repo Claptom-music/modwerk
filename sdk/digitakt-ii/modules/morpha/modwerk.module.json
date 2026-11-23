@@ -49,7 +49,7 @@
     "requires": [],
     "conflicts": [],
     "limitations": [
-      "Needs the Digitakt II base with added machines; polyphony needs the base's linked voices.",
+      "Needs the Digitakt II base with added machines and its full-resolution knobs C and E; polyphony needs the base's linked voices.",
       "Waves are read without band-limiting: very bright waves played high can alias."
     ]
   },
@@ -60,7 +60,7 @@
     "load": { "display": "About 2% of the sound chip per sounding note with every knob up (emulator)", "method": "emulator", "conditions": "One note, DETN up (three oscillators), MIX in the middle, AMT and POS up: up to 14,977 emulator instructions per block of 666,667; a stock SAMPLE note about 7,000. A unit's cycle count is not measured." }
   },
   "evidence": { "tier": "none", "moduleVersion": "0.1.0-experimental", "sourceSha256": null, "reports": [], "hardware": null, "verifiedBy": null },
-  "tests": { "report": "TESTING.md", "summary": "Not tested on a unit yet." },
+  "tests": { "report": "TESTING.md", "summary": "First unit test by the author on build 063eea9a; fixes since checked in the emulator only." },
   "license": { "spdx": "GPL-3.0-or-later", "file": "LICENSE", "declaration": "Original work by the author." },
   "media": [
     { "path": "media/thumbnail.svg", "kind": "thumbnail", "caption": "Morpha thumbnail", "alt": "A stack of single waves morphing from sine to square, one drawn bold", "credit": "Claptom-music", "license": "GPL-3.0-or-later", "source": "Original artwork in the shared signal-art style." }

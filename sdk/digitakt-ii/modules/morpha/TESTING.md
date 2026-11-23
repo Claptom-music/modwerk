@@ -1,8 +1,41 @@
 # Morpha testing
 
-Not tested on a unit yet. Everything below is emulator only; an emulator run never proves sound-chip code (sdk/machines/digitakt-ii/README.md, SHARC code rules).
+## Unit, 23 November 2026, test build `063eea9a` (reported by the author)
 
-## Emulator, 23 November 2026
+Digitakt II OS 1.17 with the development base and linked voices, Morpha on track 1, loaded over USB with Transfer.
+
+| Check | Reported |
+| --- | --- |
+| Pitch, TUNE and the keys | Pass. |
+| POS through the built-in table | Moves, but in steps rather than smoothly. |
+| WARP with AMT | Changes the tone, but AMT jumps from the plain wave to full bend with nothing between. |
+| DETN, MIX | Pass. The sub should not go below the audible range when TUNE goes down. |
+| A wavetable file, POS | Pass, but in steps. |
+| The view | Moves, not smoothly; most visible with WARP. |
+| Chords with VOICES | Each new note and each key release moves to another track, each track sounding a different wave; letting go of the second key of a two-key chord leaves a note sounding that jumps to the first key's pitch. Only on Morpha. |
+| TRIG page NOTE turned while a note sounds | The pitch does not follow (not yet compared with SAMPLE). |
+| Save, load another project, come back | Pass. |
+| Morpha on 4 or more tracks | Pass: no crackles, slowdowns or freezes. |
+
+## Emulator, 23 November 2026 (after the first unit test)
+
+Same coupled runs as below, on development base builds of `base/dt2-linked-voices` with the changes noted.
+
+| Run | Result |
+| --- | --- |
+| Why AMT jumped (trace of the knob value at the player while knob C turned during a held note) | The parameter record's word `0x28` (SAMPLE's crossfade) read 0, then 1.0 at the first detent, and nothing else: the sound chip gets that knob as off or on. Granula's SIZE reads the same word. |
+| The base sends knobs C and E at full resolution (one wire word a track) | A probe of the ColdFire's parameter targets while knob C turned showed slot 27 at `0x0a00`, `0x1400`, `0x3200`, `0x6400`, `0x7f00` (the scripted encoder accelerates), START at slot 31. A first version with two words a track (C, E, F, G) garbled every track's sound; one word a track (C, E) leaves the default note as before (peak 0.0629, the same harmonics). |
+| AMT turned during a held note | The tone moves through in-between spectra over about 0.16 s (the scripted turn's speed) to the full BEND, instead of jumping. |
+| POS turned during a held note | The built-in waves pass one after another (sine, then mixed spectra, to the vowel waves) instead of jumping. |
+| Glide | Every knob is glided (time constant about 10 ms), so a knob's steps become a sweep. |
+| The sub with TUNE far down and MIX at 0 | The sub stays at or above C1 (65.5 Hz measured at TUNE's lowest with the default note). |
+| Linked voices, track 1 leading 3 (test-only build flag), two taps then a tap of trig key 2 | The second note plays on track 2 with Morpha over the first; track 2's own tap is silent while it is linked. |
+
+## Emulator before the first unit test
+
+Everything below is emulator only; an emulator run never proves sound-chip code (sdk/machines/digitakt-ii/README.md, SHARC code rules).
+
+### 23 November 2026
 
 Coupled ColdFire and sound-chip runs (interpreter, from a ready point saved with each image's own sound-chip code) of a private OS 1.17 image: the Digitakt II development base with linked voices (`base/dt2-linked-voices`, [#2005](https://github.com/repeat98/modwerk/pull/2005)) and Morpha's package composed as the site does (`composeDt2MachineBuild`). The test card's one-second 48 kHz 220 Hz tone in slot 1 on track 1; Morpha chosen through the menu (FUNC + SRC, DOWN to the end, YES twice); knobs turned on the SRC page with small encoder steps; two taps of trig key 1 about half a second apart.
 
