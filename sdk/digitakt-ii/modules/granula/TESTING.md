@@ -22,9 +22,11 @@ Coupled ColdFire and sound-chip runs (interpreter, from a ready point saved with
 
 | Cost (entry and exit of the player traced over 8,000 calls, SIZE and DENS full) | An idle voice: 360 emulator instructions per block. A sounding voice with four long grains: up to 16,868; up to 20,903 in the block where a new note starts while the last note's grains finish. A stock SAMPLE voice playing takes about 3,500 (MACHINES.md). With the looping guide every voice that had played stayed at full cost, so the cloud now ends after the sample's length: the second run's audio falls silent about 1 s after each note's cloud began (the test tone is 1 s), where the looping build kept fading for 5 s. |
 
+| DENS turned all the way down (knob F, small turns) | One grain a step: bursts start every 146-148 ms, and a sixteenth step at the test project's 102 BPM lasts 147 ms. With DENS full: every 9.2 ms (16 a step). |
+
 ## Still to test
 
-- SIZE, DENS, POS and SPRD across their ranges; MODE REV and RAND (reversed grains).
+- Middle values of every knob, by ear; a changed tempo and track speed (the base's wire carries both; only 102 BPM at 1X was run).
 - Linked voices: chords and overlapping notes on a lead with Granula.
 - Trig locks, LFOs, save and reload, a kit with Granula on a build without it (expected: SAMPLE).
 - Cost per voice on the sound chip with every Granula voice playing; on a unit, the real cycle count.
