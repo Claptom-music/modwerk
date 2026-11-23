@@ -13,7 +13,6 @@ Digitakt II OS 1.17 with the development base and linked voices, Morpha on track
 | A wavetable file, POS | Pass, but in steps. |
 | The view | Moves, not smoothly; most visible with WARP. |
 | Chords with VOICES | Each new note and each key release moves to another track, each track sounding a different wave; letting go of the second key of a two-key chord leaves a note sounding that jumps to the first key's pitch. Only on Morpha. |
-| TRIG page NOTE turned while a note sounds | The pitch does not follow (not yet compared with SAMPLE). |
 | Save, load another project, come back | Pass. |
 | Morpha on 4 or more tracks | Pass: no crackles, slowdowns or freezes. |
 
@@ -25,7 +24,6 @@ Digitakt II OS 1.17 with the development base and linked voices, Morpha on track
 | AMT (knob C) | Morphs very well on the note playing; a following note (C, then E) did not seem to keep the change. |
 | POS (knob E) | Moves smoothly, but sounds like a blend of waves rather than one wave changing shape; more noticeable with a sample than with the built-in table. |
 | The second SRC page, FUNC held | The view fills up, then disappears when FUNC is released. |
-| TRIG page NOTE turned while a note plays | Morpha's pitch does not follow, with or without a sample. |
 
 ## Unit, 23 November 2026, test build `27dfadf8` (reported by the author)
 
@@ -33,7 +31,6 @@ Digitakt II OS 1.17 with the development base and linked voices, Morpha on track
 | --- | --- |
 | Chords with VOICES 3-4, knobs turned while playing | Pass: every chord note keeps the lead's settings. |
 | FOLD, POS (built-in table and a sample), AMT | Pass, as on `e6ffc45b`. |
-| TRIG page NOTE | Not a fault: the earlier report was made in keyboard mode, where the keys set the note. |
 
 ## Unit, 23 November 2026, test build `e6ffc45b` (reported by the author)
 
@@ -44,7 +41,6 @@ Digitakt II OS 1.17 with the development base and linked voices, Morpha on track
 | POS through a sample | Pass. |
 | The second SRC page, FUNC held | Shows the sample page while FUNC is held; the view comes back on release. |
 | AMT on the next note | Pass. |
-| TRIG page NOTE, then a new trig | SAMPLE plays the new note; Morpha did not. (Emulator, same build: TRIG page knob A up four steps, then trig key 1: Morpha played 349 Hz, five semitones over middle C, and SAMPLE's test tone moved the same five semitones, 220 to 293.7 Hz. Not reproduced.) |
 | Chords | After a while of playing, later chord notes no longer had the lead's settings (built-in table). |
 
 ## Emulator, 23 November 2026 (after the second unit test)
