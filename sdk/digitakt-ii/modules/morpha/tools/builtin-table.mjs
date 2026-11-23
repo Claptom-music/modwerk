@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Writes Morpha's built-in wavetable into src/player.sharc, between its BEGIN BUILTIN and END BUILTIN lines.
 //
-// 16 waves of 256 samples, each a sum of up to 48 harmonics (band-limited, so a wave read at middle C has nothing
-// above about 12.5 kHz), from formulas only: sine (wave 1), triangle (4), saw (7), square (10), a 15% pulse (12) and
-// two vowel-like waves (14, 16) made of a falling slope of harmonics with two resonant bumps. The waves between are
-// the spectra in between, so POS sweeps through gradual changes of tone rather than crossfades. Each wave peaks at
-// 28,000 of 32,767, the level of a well-recorded sample.
+// 48 waves of 256 samples (24 KB: from 0x200f4000 to the end of Morpha's L2 range, 0x200fa000), each a sum of up to
+// 48 harmonics (band-limited, so a wave read at middle C has nothing above about 12.5 kHz), from formulas only: sine
+// (wave 1), triangle (10), saw (19), square (28), a 15% pulse (34) and two vowel-like waves (41, 48) made of a falling
+// slope of harmonics with two resonant bumps. The six to eight waves between two of these are the spectra in between,
+// so POS sweeps through gradual changes of shape, each step small, rather than crossfades. Each wave peaks at 28,000
+// of 32,767, the level of a well-recorded sample.
 //
 // Run: node sdk/digitakt-ii/modules/morpha/tools/builtin-table.mjs
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-const N = 256, H = 48, WAVES = 16, PEAK = 28000
+const N = 256, H = 48, WAVES = 48, PEAK = 28000
 const player = fileURLToPath(new URL('../src/player.sharc', import.meta.url))
 
 // A spectrum: [sine part, cosine part] for harmonics 1..H.
@@ -26,7 +27,7 @@ const vowel = (f1, f2) => spectrum(n => [0.35 / n + bump(n, f1, 1.2) + 0.7 * bum
 const vowelA = vowel(6.6, 10)
 const vowelO = vowel(4.4, 7.6)
 
-const keys = [[0, sine], [3, triangle], [6, saw], [9, square], [11, pulse], [13, vowelA], [15, vowelO]]
+const keys = [[0, sine], [9, triangle], [18, saw], [27, square], [33, pulse], [40, vowelA], [47, vowelO]]
 
 function waveAt(index) {
   let k = 0

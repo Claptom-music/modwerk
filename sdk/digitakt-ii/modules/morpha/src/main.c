@@ -69,6 +69,10 @@ enum { FALL_LEFT = 26, FALL_FRONT = 48, FALL_WIDTH = 64, FALL_AMP = 5 };
 
 static uint32_t views_seen;
 static uint32_t shown_track = DT2_MACHINE_VIEW_NONE;
+/* Draws in a row without the sample view while it was showing: FUNC held on the page stops the stock drawing it for a
+ * while, and only the redraws morpha_tick asks for bring it back, so the view is kept (not drawn) for a while first. */
+static unsigned int missed;
+enum { KEEP_DRAWS = 90 };
 static uint32_t serial_seen;
 static uint32_t table_waves;          /* the table's wave count the stored waves belong to */
 static int8_t waves[SLOTS][POINTS];   /* the table's twelve waves, as the player sent them */
@@ -157,12 +161,16 @@ void morpha_draw(void *bitmap, void *ctrl)
         }
     }
     if (track == DT2_MACHINE_VIEW_NONE) {
+        if (shown_track != DT2_MACHINE_VIEW_NONE && ++missed < KEEP_DRAWS) {
+            return; /* keep asking for redraws: the sample view may come back (FUNC released) */
+        }
         if (shown_track != DT2_MACHINE_VIEW_NONE && core_machine_view_track == shown_track) {
             core_machine_view_track = DT2_MACHINE_VIEW_NONE;
         }
         shown_track = DT2_MACHINE_VIEW_NONE;
         return;
     }
+    missed = 0;
     const volatile uint32_t *const view = core_machine_view;
     if (track != shown_track) {
         have = 0;

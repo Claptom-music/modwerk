@@ -17,6 +17,26 @@ Digitakt II OS 1.17 with the development base and linked voices, Morpha on track
 | Save, load another project, come back | Pass. |
 | Morpha on 4 or more tracks | Pass: no crackles, slowdowns or freezes. |
 
+## Unit, 23 November 2026, test build `629ee977` (reported by the author)
+
+| Check | Reported |
+| --- | --- |
+| WARP at FOLD | Plays nothing and the track stops answering notes; switched to FOLD while a note plays, a high note starts and the unit needs a power cycle. |
+| AMT (knob C) | Morphs very well on the note playing; a following note (C, then E) did not seem to keep the change. |
+| POS (knob E) | Moves smoothly, but sounds like a blend of waves rather than one wave changing shape; more noticeable with a sample than with the built-in table. |
+| The second SRC page, FUNC held | The view fills up, then disappears when FUNC is released. |
+| TRIG page NOTE turned while a note plays | Morpha's pitch does not follow, with or without a sample. |
+
+## Emulator, 23 November 2026 (after the second unit test)
+
+| Run | Result |
+| --- | --- |
+| WARP at FOLD (build `629ee977`) | The coupled emulator's sound chip stopped at the player's `IF NE RTS` in the oscillator, the one conditional return that FOLD runs past instead of taking. The assembler encodes a conditional RTS in a form that only works when it returns; the player now jumps to a plain RTS. After: FOLD plays (the default note, peak 0.061), no stop. |
+| AMT and POS on the next note, one track | AMT turned up during a first note: the second note on the same track keeps it (same spectrum). POS likewise. |
+| AMT on the next note, track 1 leading 3 (test-only build flag) | AMT turned during note 1 on track 1; note 2 on track 2 sounds bent as well. The unit report is not reproduced here. |
+| Built-in table of 48 waves | Assembled: the table fills Morpha's L2 range to `0x200fa000`. |
+| The view and FUNC (host build of `src/main.c`) | Compiles and draws as before; the page now keeps asking for redraws for 90 draws after the sample view stops being drawn. Not seen on a screen. |
+
 ## Emulator, 23 November 2026 (after the first unit test)
 
 Same coupled runs as below, on development base builds of `base/dt2-linked-voices` with the changes noted.
