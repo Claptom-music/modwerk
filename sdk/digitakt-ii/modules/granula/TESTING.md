@@ -14,6 +14,9 @@ Coupled ColdFire and sound-chip runs (interpreter, from a ready point saved with
 | SIZE turned to full (knob C, three turns of 100) | First build: grains still about 5 ms and the level halved. A trace showed two faults: a new grain took over a slot whose grain still sounded (four slots, a start every 441 samples, 1 s grains), and the pair of voices a note plays on read different SIZE values (only the first voice's parameter record had the turn). Fixed: at most four grains overlap (the interval grows with SIZE), and both voices read the pair's first record. After the fix: the cloud swells in over about half a second and stays smooth (RMS 0.029 against 0.020 with SIZE 0), and the first note's cloud carries on into the second. |
 | Linked voices, track 1 leading 3 tracks (base test flag) | The second note's cloud plays over the first: peak 0.088 against 0.058 for one cloud. Where they overlap the 1 ms envelope is still made of grain bursts, so the voice track plays Granula, not SAMPLE: its lead's machine type reached the sound chip. |
 
+| MODE turned to REV (knob B fully down) | Every grain reversed (the record's own negative step); each burst's peak 0.056-0.058, as forward. |
+| MODE at RAND (knob B down, then up in steps of 8: REV.L) | A trace shows each grain's step made positive, then negated when its random bit is set, so grains go both ways. First build: about two thirds of the bursts peaked at 0.033 instead of 0.056: the note's pair of voices, which sound together, chose directions apart, and a forward and a reversed grain partly cancelled. Fixed: the pair's second voice takes the first voice's random bits, so their grains match. After the fix every burst peaks at 0.052-0.058. |
+
 ## Still to test
 
 - SIZE, DENS, POS and SPRD across their ranges; MODE REV and RAND (reversed grains).

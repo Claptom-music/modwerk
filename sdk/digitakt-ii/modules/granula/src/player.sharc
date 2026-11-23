@@ -467,9 +467,14 @@ copy_end: DM(I1, M0) = R0
 fresh_end: NOP
   I1 = R7
 
-; Where it starts: POS of the sample, plus up to +-SPRD/2 of it at random.
+; Where it starts: POS of the sample, plus up to +-SPRD/2 of it at random. The two voices a note plays on (a pair,
+; rendered first then second in the same block, and starting grains in the same blocks) take the same random bits, so
+; their grains match: in the emulator, a pair whose grains went different ways partly cancelled.
   R1 = S_RANDOM
   M1 = R1
+  R0 = 1
+  R0 = R9 AND R0
+  IF NE JUMP random_pair
   R0 = DM(M1, I2)
   R1 = 1664525
   R0 = R0 * R1 (SSI)
@@ -477,6 +482,17 @@ fresh_end: NOP
   R0 = R0 + R1
   DM(M1, I2) = R0
   R11 = R0                      ; R11: this grain's random bits
+  JUMP random_done
+random_pair:
+  R0 = DM(V_VSTATE)
+  R1 = -VSTATEB
+  R0 = R0 + R1                  ; the pair's first voice's state
+  I3 = R0
+  R1 = S_RANDOM
+  M1 = R1
+  R11 = DM(M1, I3)              ; the bits it drew this block
+  R0 = R11
+random_done:
   R1 = -8
   R0 = LSHIFT R0 BY R1          ; 24 bits
   F0 = FLOAT R0
