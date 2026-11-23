@@ -176,10 +176,11 @@ granula_player:
   COMP(R2, R3)
   IF EQ JUMP same_note
 new_note:
-  R0 = 0                        ; the first grain starts in this block, every other grain stops
-  R1 = S_COUNT
+  R0 = 64                       ; the first grain starts next block: in a note's first block the record can still
+  R1 = S_COUNT                  ; hold the previous sample's length (emulator: 368 samples where the note's had 48,000)
   M1 = R1
   DM(M1, I2) = R0
+  R0 = 0                        ; every other grain stops
   R1 = S_NEXT
   M1 = R1
   DM(M1, I2) = R0
@@ -517,8 +518,10 @@ random_done:
   F0 = MIN(F0, F1)
   R2 = DM(V_LENW)               ; (R0 would overwrite F0: Rn and Fn are one register)
   F1 = FLOAT R2
+where_scaled:
   F0 = F0 * F1
   R8 = FIX F0                   ; R8: the start, in words
+where_done:
 
 ; Its direction: the record's own (REV is already reversed), or at random in the loop play modes (RAND).
   R1 = R_LOOPING
