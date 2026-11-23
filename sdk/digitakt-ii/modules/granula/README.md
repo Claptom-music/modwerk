@@ -27,7 +27,7 @@ The SRC page, while a track plays Granula:
 
 Granula's knobs are SAMPLE's own parameters under new names, so trig locks, live recording, MIDI and LFOs work on them as on SAMPLE. Every knob acts on the next grain: a turn changes the cloud as it plays.
 
-A cloud plays until the next note on its voice, wherever POS is, and the amp envelope shapes and ends it, as on a synth: set the AMP page's decay, sustain and release for the note length you want.
+A cloud lasts as long as the sample does at its own speed, wherever POS is: a 4 s pad gives 4 s clouds. The amp envelope shapes it and can end it sooner, as on a synth. For longer clouds, use a longer sample.
 
 ## Usage
 
@@ -44,6 +44,7 @@ A cloud plays until the next note on its voice, wherever POS is, and the amp env
 - Machine type 8, claimed as `machine:8`: kits save it, and a kit with Granula loads as SAMPLE where Granula is not installed.
 - Granula's sound-chip memory is L2 `0x200d0000`-`0x200f0000` (board claim `dsp-region digitakt-ii/granula-l2`).
 - B's two loop positions both play RAND.
+- Cost on the sound chip (emulator): a sounding note takes up to about 34,000 instructions of a block's 666,667, about 5% (two voices of four grains each at full SIZE; a stock SAMPLE note about 7,000). A few Granula notes at once are fine; Granula on every track with long grains is not, and is not measured on a unit yet.
 - Up to four grains sound at once per voice. With a long SIZE, DENS starts no more grains than that: a 1 s grain allows one start every quarter second.
 
 ## How it works

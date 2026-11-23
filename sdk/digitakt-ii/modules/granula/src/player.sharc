@@ -7,8 +7,9 @@
 ; stock player does (CRET). Facts about the records: sdk/machines/digitakt-ii/elekloader/modwerk/MACHINES.md.
 ;
 ; Each voice has a guide and up to GRAINS grains. The guide is the voice's own record, played by the stock sample
-; player into a block nobody hears, looping over the whole sample: while it plays, grains start, so a cloud lasts
-; until the next note on the voice, and the amp envelope shapes and ends it, as on a synth. A grain is a copy of the
+; player into a block nobody hears, looping over the whole sample: while it plays and the note is younger than the
+; sample's length, grains start, so a cloud lasts as long as the sample wherever POS is (the amp envelope can end it
+; sooner); then the voice is idle again. A grain is a copy of the
 ; record that starts at POS plus a random offset of up to SPRD, plays for SIZE samples through the stock player (so
 ; TUNE, the note and the sample's own rate apply) and is shaped by a smooth window, 4 p (1 - p) over its life p.
 ; DENS sets how many grains start per step of the track (1-16, from the base's tempo wire), so the cloud follows the
@@ -66,6 +67,7 @@
 .equ S_LASTPOS, 2               ;   the guide's position after the last block, -1 before the first
 .equ S_LASTFRAC, 3              ;   and its fraction
 .equ S_NEXT, 4                  ;   the grain slot the next start takes
+.equ S_AGE, 5                   ;   samples since the note started: the cloud ends after the sample's length
 .equ GSTATE, 0x200d8000         ; per grain 8 words (below)
 .equ G_ACTIVE, 0
 .equ G_PHASE, 1                 ;   its life so far, 0-1 (float)
@@ -193,6 +195,9 @@ new_note:
   R1 = S_NEXT
   M1 = R1
   DM(M1, I2) = R0
+  R1 = S_AGE
+  M1 = R1
+  DM(M1, I2) = R0
   R0 = DM(V_GSTATE)
   I3 = R0
   R0 = 0
@@ -201,6 +206,21 @@ new_note:
   NOP
 clear_end: NOP
 same_note:
+
+; The cloud's age. Past the sample's length (at its own speed) the cloud is over: no guide, no new grains, so a voice
+; that has played costs no more than an idle one (a looping guide kept every played voice at full cost).
+  R0 = DM(V_VSTATE)
+  I2 = R0
+  R1 = S_AGE
+  M1 = R1
+  R2 = DM(M1, I2)
+  R3 = DM(V_LENW)
+  R3 = R3 + R3
+  COMP(R2, R3)
+  IF GT JUMP guide_done
+  R3 = 32
+  R2 = R2 + R3
+  DM(M1, I2) = R2
 
 ; The guide: the voice's record through the stock player, into a block nobody hears.
   R4 = DM(V_REC)
@@ -275,6 +295,15 @@ guide_done:
   R0 = DM(M1, I1)
   R0 = PASS R0
   IF EQ JUMP no_start
+  R0 = DM(V_VSTATE)
+  I2 = R0
+  R1 = S_AGE
+  M1 = R1
+  R2 = DM(M1, I2)
+  R3 = DM(V_LENW)
+  R3 = R3 + R3
+  COMP(R2, R3)
+  IF GT JUMP no_start           ; the cloud is over
   CALL start_grain
 no_start:
 

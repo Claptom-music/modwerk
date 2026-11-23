@@ -57,7 +57,7 @@
   "resources": {
     "memoryBytes": null,
     "fastBytes": null,
-    "load": { "display": "Not measured yet", "method": "unmeasured", "conditions": "Measure with every track playing Granula at DENS and SIZE full, with linked voices." }
+    "load": { "display": "About 5% of the sound chip per sounding note (emulator)", "method": "emulator", "conditions": "One note on two voices, SIZE and DENS full (four grains each): up to 16,800 emulator instructions per voice per 32-sample block of 666,667; a stock SAMPLE voice takes about 3,500. A unit's cycle count is not measured." }
   },
   "evidence": { "tier": "none", "moduleVersion": "0.1.0-experimental", "sourceSha256": null, "reports": [], "hardware": null, "verifiedBy": null },
   "tests": { "report": "TESTING.md", "summary": "Not tested on a unit yet." },
