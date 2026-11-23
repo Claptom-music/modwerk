@@ -27,6 +27,18 @@ Digitakt II OS 1.17 with the development base and linked voices, Morpha on track
 | The second SRC page, FUNC held | The view fills up, then disappears when FUNC is released. |
 | TRIG page NOTE turned while a note plays | Morpha's pitch does not follow, with or without a sample. |
 
+## Unit, 23 November 2026, test build `e6ffc45b` (reported by the author)
+
+| Check | Reported |
+| --- | --- |
+| WARP at FOLD | Plays. |
+| POS through the built-in table | Pass: one wave changing shape. |
+| POS through a sample | Pass. |
+| The second SRC page, FUNC held | Shows the sample page while FUNC is held; the view comes back on release. |
+| AMT on the next note | Pass. |
+| TRIG page NOTE, then a new trig | SAMPLE plays the new note; Morpha did not. (Emulator, same build: TRIG page knob A up four steps, then trig key 1: Morpha played 349 Hz, five semitones over middle C, and SAMPLE's test tone moved the same five semitones, 220 to 293.7 Hz. Not reproduced.) |
+| Chords | After a while of playing, later chord notes no longer had the lead's settings (built-in table). |
+
 ## Emulator, 23 November 2026 (after the second unit test)
 
 | Run | Result |
