@@ -12,7 +12,7 @@
     "label": "MORPHA",
     "family": "Machine",
     "summary": "A wavetable synth machine: it sweeps through a table of waves, from your own sample or a built-in one, bending each wave as it plays.",
-    "overview": "Morpha is a new machine in the track's machine list. It reads a wavetable, a row of single waves, and plays one of them as an oscillator at the note's pitch: POS picks the place in the table and Morpha morphs smoothly between the two waves around it, so turning POS or modulating it with an LFO changes the tone as it plays. The table is the track's sample cut into waves of 2,048 samples, the usual size of wavetable files, or, with no sample, a built-in table that runs from sine through triangle, saw, square and pulse to two vowel-like waves. WARP bends each wave four ways (BEND, SYNC, MIRR, FOLD) by AMT, DETN thickens it with two detuned copies, and SUB adds a sine an octave below. The Digitakt's own filter, amp envelope, LFOs and effects shape it like any machine. For chords, link tracks as voices in SETTINGS (VOICES), a feature of the Digitakt II base.",
+    "overview": "Morpha is a new machine in the track's machine list. It reads a wavetable, a row of single waves, and plays one of them as an oscillator at the note's pitch: POS picks the place in the table and Morpha morphs smoothly between the two waves around it, so turning POS or modulating it with an LFO changes the tone as it plays. The table is the track's sample cut into waves of 2,048 samples, the usual size of wavetable files, or, with no sample, a built-in table that runs from sine through triangle, saw, square and pulse to two vowel-like waves. WARP bends each wave four ways (BEND, SYNC, MIRR, FOLD) by AMT, DETN thickens it with two detuned copies, and MIX blends in a sine an octave below. The Digitakt's own filter, amp envelope, LFOs and effects shape it like any machine. For chords, link tracks as voices in SETTINGS (VOICES), a feature of the Digitakt II base.",
     "highlights": [
       "Its own machine in the track's machine list, saved with the kit.",
       "Plays your own wavetables, or a built-in table with no sample at all.",
@@ -41,8 +41,8 @@
     { "name": "AMT (knob C)", "default": 0, "doc": "How much WARP bends the wave; at 0 the wave plays as it is.", "labels": null },
     { "name": "SAMP (knob D)", "default": null, "doc": "The wavetable: a sample cut into waves of 2,048 samples (a shorter sample is one wave), or none for the built-in table.", "labels": null },
     { "name": "POS (knob E)", "default": 0, "doc": "Which wave of the table plays, morphing smoothly between neighbouring waves.", "labels": null },
-    { "name": "DETN (knob F)", "default": null, "doc": "Unison: one oscillator at 0; turned up, two more detuned up and down by up to half a semitone.", "labels": null },
-    { "name": "SUB (knob G)", "default": 0, "doc": "The level of a sine one octave below.", "labels": null }
+    { "name": "MIX (knob F)", "default": null, "doc": "The wave against a sine one octave below: full the wave alone, the middle both, 0 the sine alone.", "labels": null },
+    { "name": "DETN (knob G)", "default": 0, "doc": "Unison: one oscillator at 0; turned up, two more detuned up and down by up to half a semitone.", "labels": null }
   ],
   "compatibility": {
     "releases": ["1.17"],
@@ -57,7 +57,7 @@
   "resources": {
     "memoryBytes": null,
     "fastBytes": null,
-    "load": { "display": "Not measured yet", "method": "unmeasured", "conditions": "Measure with DETN and SUB up on every voice, in the emulator and on a unit." }
+    "load": { "display": "About 2% of the sound chip per sounding note with every knob up (emulator)", "method": "emulator", "conditions": "One note, DETN up (three oscillators), MIX in the middle, AMT and POS up: up to 14,977 emulator instructions per block of 666,667; a stock SAMPLE note about 7,000. A unit's cycle count is not measured." }
   },
   "evidence": { "tier": "none", "moduleVersion": "0.1.0-experimental", "sourceSha256": null, "reports": [], "hardware": null, "verifiedBy": null },
   "tests": { "report": "TESTING.md", "summary": "Not tested on a unit yet." },

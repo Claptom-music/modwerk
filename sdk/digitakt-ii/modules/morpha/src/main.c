@@ -10,8 +10,9 @@
  *   C AMT    how much warp (SAMPLE's crossfade, which SAMPLE itself does not show)
  *   D SAMP   the wavetable: a sample cut into waves of 2,048 samples, or no sample for the built-in table
  *   E POS    which wave of the table plays, morphing smoothly between neighbours (SAMPLE's START)
- *   F DETN   unison: one oscillator at 0, three detuned ones turned up (SAMPLE's LENGTH)
- *   G SUB    a sine one octave below (SAMPLE's LOOP position)
+ *   F MIX    the wave against a sine one octave below: full the wave alone (a new track's value), 0 the sine alone
+ *            (SAMPLE's LENGTH)
+ *   G DETN   unison: one oscillator at 0 (a new track's value), three detuned ones turned up (SAMPLE's LOOP position)
  *   H LEV    the track level
  *
  * Polyphony comes from the base's linked voices (SETTINGS > VOICES): the voice tracks play a lead's notes with the
@@ -38,8 +39,8 @@ const struct dt2_machine morpha_machine = {
         { "Warp Mode", "WARP", warps },
         { "Warp Amount", "AMT", 0 },
         { "Position", "POS", 0 },
+        { "Sub Mix", "MIX", 0 },
         { "Detune", "DETN", 0 },
-        { "Sub Osc", "SUB", 0 },
     },
 };
 

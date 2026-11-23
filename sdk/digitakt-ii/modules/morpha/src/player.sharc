@@ -13,7 +13,7 @@
 ; LFOs, as SAMPLE plays a sample), so a step of one sample per sample plays middle C.
 ;
 ; Each voice runs up to three oscillators (DETN: the two outer ones detuned up and down) and a sine one octave down
-; (SUB). WARP (SAMPLE's play mode) bends each oscillator's phase before the wave is read: BEND pushes it towards the
+; that MIX blends in (full: the wave alone; 0: the sub alone). WARP (SAMPLE's play mode) bends each oscillator's phase before the wave is read: BEND pushes it towards the
 ; wave's ends, SYNC restarts the wave up to four times a cycle, MIRR plays it forward then back; FOLD folds the wave's
 ; level instead. AMT sets how much.
 ;
@@ -39,8 +39,8 @@
 .equ PREC0, 0x250738            ; voice 0's parameter record (byte address); 0xdc bytes per voice
 .equ PRECB, 0xdc
 .equ P_POS, 0x25                ; knob E (SAMPLE's START) as 0-1
-.equ P_DETN, 0x26               ; knob F (SAMPLE's LENGTH) as 0-1
-.equ P_SUB, 0x27                ; knob G (SAMPLE's LOOP position) as 0-1
+.equ P_MIX, 0x26               ; knob F (SAMPLE's LENGTH) as 0-1, full on a new track
+.equ P_DETN, 0x27               ; knob G (SAMPLE's LOOP position) as 0-1, 0 on a new track
 .equ P_AMT, 0x28                ; knob C (SAMPLE's crossfade) as 0-1
 
 .equ VARS, 0x200f3000
@@ -60,7 +60,7 @@
 .equ V_T, V + 12                ; how far from the first wave to the next, 0-1
 .equ V_AMT, V + 13
 .equ V_DETN, V + 14
-.equ V_SUB, V + 15
+.equ V_MIX, V + 15
 .equ V_POS, V + 16
 .equ V_G, V + 17                ; the outer oscillators' level
 .equ V_UNI, V + 18              ; nonzero: three oscillators
@@ -160,11 +160,11 @@ morpha_player:
   F0 = DM(M1, I3)
   CALL unit
   DM(V_DETN) = F0
-  R1 = P_SUB
+  R1 = P_MIX
   M1 = R1
   F0 = DM(M1, I3)
   CALL unit
-  DM(V_SUB) = F0
+  DM(V_MIX) = F0
   R1 = P_POS
   M1 = R1
   F0 = DM(M1, I3)
@@ -181,9 +181,10 @@ morpha_player:
   R1 = R_LOOPING
   M1 = R1
   R7 = DM(M1, I1)
+  R0 = 1
+  R7 = MIN(R7, R0)
   R0 = 0
-  COMP(R7, R0)
-  IF NE R7 = R0 + 1             ; R7: 1 in a loop mode
+  R7 = MAX(R7, R0)              ; R7: 1 in a loop mode
   R6 = 0
   R0 = PASS R2
   IF LT CALL negate             ; R6 = 1 and the step's size, forward
@@ -296,15 +297,15 @@ table_set:
   F1 = F0 * F1
   F1 = MIN(F1, F2)
   DM(V_G) = F1                  ; F1: the outer level
-  R0 = 0
+  R4 = 0                        ; (not R0: R0 is F0, DETN)
   F3 = 0.001
   COMP(F0, F3)
-  IF GT R0 = R0 + 1
-  DM(V_UNI) = R0
-  R0 = PASS R0
+  IF GT R4 = R4 + 1
+  DM(V_UNI) = R4
+  R4 = PASS R4
   IF EQ F1 = F1 - F1            ; one oscillator: no outer level in the gain
 
-; The gains: detuned oscillators add up as noise does, 1 / sqrt(1 + 2 g^2); the sub adds up to half again.
+; The gains: detuned oscillators add up as noise does, 1 / sqrt(1 + 2 g^2).
   F3 = F1 * F1
   F3 = F3 + F3
   F3 = F3 + F2
@@ -316,22 +317,32 @@ table_set:
   F7 = 1.5
   F6 = F7 - F6
   F4 = F4 * F6                  ; F4: the unison gain
-  F6 = DM(V_SUB)
-  F7 = 0.5
-  F7 = F6 * F7
-  F7 = F7 + F2                  ; 1 + SUB / 2
-  F0 = RECIPS F7
-  F1 = F7 * F0                  ; refined once: x (2 - a x)
-  F3 = 2.0
-  F1 = F3 - F1
-  F0 = F0 * F1                  ; F0: 1 / (1 + SUB / 2)
+; MIX: the wave at min(1, 2 MIX), the sub at min(1, 2 (1 - MIX)), together at a steady level, 1 / sqrt(w^2 + s^2).
+  F6 = DM(V_MIX)
+  F6 = F6 + F6
+  F6 = MIN(F6, F2)              ; F6: the wave's share
+  F7 = DM(V_MIX)
+  F7 = F2 - F7
+  F7 = F7 + F7
+  F7 = MIN(F7, F2)              ; F7: the sub's share
+  F3 = F6 * F6
+  F0 = F7 * F7
+  F3 = F3 + F0
+  F0 = RSQRTS F3                ; refined once
+  F1 = F0 * F0
+  F1 = F1 * F3
+  F5 = 0.5
+  F1 = F1 * F5
+  F5 = 1.5
+  F1 = F5 - F1
+  F0 = F0 * F1                  ; F0: 1 / sqrt(w^2 + s^2)
   F3 = 0.000012207031           ; 0.4 / 32768: SAMPLE's level (emulator: SAMPLE peaked at 0.4 of Morpha's
-  F4 = F4 * F0                  ; unscaled read of the same sample, 0.063 against 0.157)
-  F4 = F4 * F3
+  F0 = F0 * F3                  ; unscaled read of the same sample, 0.063 against 0.157)
+  F4 = F4 * F6
+  F4 = F4 * F0
   DM(V_WGAIN) = F4
-  F6 = F6 * F0
-  F6 = F6 * F3
-  DM(V_SGAIN) = F6
+  F7 = F7 * F0
+  DM(V_SGAIN) = F7
 
 ; WARP's constants.
   F0 = DM(V_AMT)
@@ -686,7 +697,7 @@ post_view:
   R0 = DM(VIEW_TRACK)
   R1 = DM(V_TRACK)
   COMP(R0, R1)
-  IF NE RTS
+  IF NE JUMP view_done
   R0 = VIEW_MAGIC
   DM(VIEW + 0) = R0
   DM(VIEW + 1) = R1
@@ -723,7 +734,7 @@ post_view:
   IF GE JUMP view_next
   R13 = R13 + 1
   DM(V_VFILL) = R13
-  RTS
+  JUMP view_done
 view_next:
   R13 = 0
   DM(V_VFILL) = R13
@@ -786,6 +797,7 @@ view_point_loop:
   R13 = R13 + 1
   DM(V_VFILL) = R13
   DM(VIEW + 5) = R13
+view_done:
   RTS
 
 ; view_point: R0 = the view's wave at phase F8 as a byte (the level / 256, -127 to 127). Changes R0-R6, F7, F9, F12, M4.
