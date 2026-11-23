@@ -27,7 +27,7 @@ The SRC page, while a track plays Granula:
 
 Granula's knobs are SAMPLE's own parameters under new names, so trig locks, live recording, MIDI and LFOs work on them as on SAMPLE. Every knob acts on the next grain: a turn changes the cloud as it plays.
 
-A cloud lasts as long as the sample would at the note's pitch. In RAND it lasts until the next note, as a looped sample does; the amp envelope ends it.
+A cloud plays until the next note on its voice, wherever POS is, and the amp envelope shapes and ends it, as on a synth: set the AMP page's decay, sustain and release for the note length you want.
 
 ## Usage
 
@@ -48,7 +48,7 @@ A cloud lasts as long as the sample would at the note's pitch. In RAND it lasts 
 
 ## How it works
 
-The base sends Granula's voices to its sound-chip player (`src/player.sharc`). Each block of 32 samples the player plays the voice's own record into a block nobody hears (the guide, which ends the cloud as the sample would end), starts a grain when the countdown from DENS runs out, plays each sounding grain through the stock sample player from its own copy of the record, and adds it into the voice's output through a smooth window. The window's peak gain falls as grains overlap more, so a dense cloud is about as loud as a sparse one.
+The base sends Granula's voices to its sound-chip player (`src/player.sharc`). Each block of 32 samples the player plays the voice's own record, looping over the whole sample, into a block nobody hears (the guide, which tells it a note is playing), starts a grain when the countdown from DENS runs out, plays each sounding grain through the stock sample player from its own copy of the record, and adds it into the voice's output through a smooth window. The window's peak gain falls as grains overlap more, so a dense cloud is about as loud as a sparse one.
 
 ## Tests and measurements
 

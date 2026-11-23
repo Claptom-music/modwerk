@@ -7,8 +7,8 @@
 ; stock player does (CRET). Facts about the records: sdk/machines/digitakt-ii/elekloader/modwerk/MACHINES.md.
 ;
 ; Each voice has a guide and up to GRAINS grains. The guide is the voice's own record, played by the stock sample
-; player into a block nobody hears, with its end moved to the sample's end: it ends the cloud when the sample would
-; end at the note's pitch (in the loop play modes it never ends, as a looped sample). A grain is a copy of the
+; player into a block nobody hears, looping over the whole sample: while it plays, grains start, so a cloud lasts
+; until the next note on the voice, and the amp envelope shapes and ends it, as on a synth. A grain is a copy of the
 ; record that starts at POS plus a random offset of up to SPRD, plays for SIZE samples through the stock player (so
 ; TUNE, the note and the sample's own rate apply) and is shaped by a smooth window, 4 p (1 - p) over its life p.
 ; DENS sets how many grains start per step of the track (1-16, from the base's tempo wire), so the cloud follows the
@@ -55,6 +55,7 @@
 .equ V_LENW, V + 6              ; the sample's length in words
 .equ V_GRAIN, V + 7             ; the grain being handled, 0-3
 .equ V_GAIN, V + 8              ; the window's peak gain for this block
+.equ V_RAND, V + 9              ; nonzero in RAND: the play mode's loop flag, read before the guide's is set
 .equ V_SAVE, V + 16             ; 24 saved registers
 
 .equ SCRATCH, 0x200d6400        ; 32 floats: one grain's block
@@ -154,6 +155,14 @@ granula_player:
   DM(V_LENW) = R0
   R1 = R_ENDW
   M1 = R1
+  DM(M1, I1) = R0
+; The guide loops, so a cloud lasts until the amp envelope ends it (from a POS near the sample's end it lasted a
+; quarter second). The setup writes the play mode's loop flag every block: read it first, as the mode.
+  R1 = R_LOOPING
+  M1 = R1
+  R0 = DM(M1, I1)
+  DM(V_RAND) = R0
+  R0 = 1
   DM(M1, I1) = R0
 
 ; A new note? The setup moved the guide's position since this player left it.
@@ -526,11 +535,11 @@ where_done:
 ; Its direction: the record's own (REV is already reversed), or at random in the loop play modes (RAND).
   R1 = R_LOOPING
   M1 = R1
-  R0 = DM(M1, I1)
-  R0 = PASS R0
-  IF EQ JUMP direction_done
   R0 = 0
   DM(M1, I1) = R0               ; a grain never loops
+  R0 = DM(V_RAND)
+  R0 = PASS R0
+  IF EQ JUMP direction_done
   R1 = R_STEPW
   M2 = R1
   R2 = DM(M2, I1)               ; the step's whole part
@@ -551,15 +560,23 @@ direction_done:
   R1 = R_STEPW
   M1 = R1
   R0 = DM(M1, I1)
-  R0 = PASS R0
-  IF GE JUMP place
   F1 = 0.5                      ; SIZE samples are SIZE / 2 words
-  F0 = F4 * F1
-  R0 = FIX F0
-  R8 = R8 + R0
+  F2 = F4 * F1
+  R3 = FIX F2                   ; R3: the grain's length in words
+  R0 = PASS R0
+  IF GE JUMP forward_fit
+  R8 = R8 + R3
   R0 = DM(V_LENW)
   R0 = R0 - 1
   R8 = MIN(R8, R0)
+  JUMP place
+forward_fit:                    ; a forward grain ends before the sample does (POS at its end played nothing)
+  R0 = DM(V_LENW)
+  R0 = R0 - R3
+  R0 = R0 - 1
+  R8 = MIN(R8, R0)
+  R0 = 0
+  R8 = MAX(R8, R0)
 place:
   R1 = R_POS
   M1 = R1

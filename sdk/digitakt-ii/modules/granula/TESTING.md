@@ -17,6 +17,9 @@ Coupled ColdFire and sound-chip runs (interpreter, from a ready point saved with
 | MODE turned to REV (knob B fully down) | Every grain reversed (the record's own negative step); each burst's peak 0.056-0.058, as forward. |
 | MODE at RAND (knob B down, then up in steps of 8: REV.L) | A trace shows each grain's step made positive, then negated when its random bit is set, so grains go both ways. First build: about two thirds of the bursts peaked at 0.033 instead of 0.056: the note's pair of voices, which sound together, chose directions apart, and a forward and a reversed grain partly cancelled. Fixed: the pair's second voice takes the first voice's random bits, so their grains match. After the fix every burst peaks at 0.052-0.058. |
 
+| POS turned to its end, SPRD up (knobs E and G, small turns) | First build: the note's first block still held the previous sample's length (368 samples against 48,000), and a forward grain placed at the sample's very end played nothing; each cloud lasted a quarter second, as the guide ran from POS to the end. Fixed: the first grain waits one block, a forward grain starts early enough to fit, and the guide loops, so a cloud lasts until the amp envelope ends it. After the fix: grains start between words 21,320 and 23,871 of 24,000, scattered by SPRD; both notes play at full level (peak 0.064) and fade with the amp envelope over about 5 s. |
+| Default knobs with the looping guide | The cloud fades with the amp envelope (peak 0.058 down to 0.0002 over 5 s) instead of stopping at the sample's end. No grain reversed (a trace of the negation found none), so the play mode reads right every block. |
+
 ## Still to test
 
 - SIZE, DENS, POS and SPRD across their ranges; MODE REV and RAND (reversed grains).
